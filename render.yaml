@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: crtt-api
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DB_PATH
+        value: /var/data/data.sqlite3
+      - key: EXPORT_TOKEN
+        generateValue: true
+      # 部署后把你的 Cloudflare Pages 域名填进来（逗号分隔可填多个）
+      # - key: CORS_ORIGIN
+      #   value: https://your-pages-domain.pages.dev
+    disk:
+      name: crtt-data
+      mountPath: /var/data
+      sizeGB: 1
+
