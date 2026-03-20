@@ -57,3 +57,39 @@ CSV 每行是一个 `session`，包含：
 
 前端通过 Vite 代理 `/api` 到后端；生产部署时可把前端构建产物交给任意静态托管，并把 `/api` 反代到后端即可。
 
+## 自动化：推送代码 + 云端自动部署
+
+**说明**：我无法代替你完成 GitHub 登录（涉及你的账号与令牌），但可以把你本地操作缩成一条命令，并让 GitHub 在每次推送后自动检查构建。
+
+### 1）只做一次：保存 GitHub 登录（推荐 GitHub CLI）
+
+```bash
+brew install gh   # 若未安装
+gh auth login
+```
+
+按提示用浏览器登录即可，之后 `git push` 一般不再需要每次输密码。
+
+### 2）以后每次改完代码：一条命令提交并推送
+
+```bash
+cd "/Users/hujunpeng/Documents/cloude code"
+npm run publish:github -- "说明这次改了什么"
+```
+
+等价于执行 `scripts/publish-github.sh`：自动 `git add` → `commit` → `push`。
+
+### 3）云端「自动部署」（无需再点按钮）
+
+在 **Render**、**Cloudflare Pages** 里把项目绑定到同一 GitHub 仓库后，**每次 push 到默认分支** 会自动触发重新构建/部署，无需额外脚本。
+
+### 4）GitHub Actions：自动跑前端构建（CI）
+
+仓库已包含 `.github/workflows/ci.yml`：向 `main` 推送或提 PR 时，会在云端执行 `web` 的 `npm ci && npm run build`，避免明显构建错误进主分支。
+
+本地可先自检：
+
+```bash
+npm run ci
+```
+

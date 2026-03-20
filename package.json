@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "concurrently -n server,web -c blue,green \"npm --prefix server run dev\" \"npm --prefix web run dev\"",
     "start": "npm --prefix server run start",
+    "ci": "npm --prefix web ci && npm --prefix web run build",
+    "publish:github": "bash scripts/publish-github.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
