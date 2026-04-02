@@ -24,3 +24,8 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      - name: Verify production bundle + server deps
+        run: |
+          npm ci --prefix server
+          test -f web/dist/index.html

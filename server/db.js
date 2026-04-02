@@ -41,7 +41,23 @@ db.exec(`
     unique(session_id, trial_index),
     foreign key (session_id) references sessions(session_id)
   );
+
+  create table if not exists invites (
+    token text primary key,
+    participant_id text,
+    label text,
+    max_uses integer not null default 1,
+    use_count integer not null default 0,
+    expires_at text,
+    created_at text not null default (datetime('now'))
+  );
 `)
+
+try {
+  db.exec(`alter table sessions add column invite_token text`)
+} catch (e) {
+  if (!/duplicate column name/i.test(String(e.message))) throw e
+}
 
 module.exports = { db, DB_PATH }
 

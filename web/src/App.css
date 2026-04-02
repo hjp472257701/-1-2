@@ -47,6 +47,14 @@
   opacity: 0.95;
 }
 
+.muted.notice {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+  line-height: 1.55;
+}
+
 .error {
   background: rgba(220, 38, 38, 0.1);
   border: 1px solid rgba(220, 38, 38, 0.35);
@@ -70,12 +78,19 @@
 
 input[type='text'],
 input[type='number'],
-input:not([type]) {
+input:not([type]),
+select.crttSelect {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--code-bg);
   color: var(--text-h);
+}
+
+select.crttSelect {
+  width: 100%;
+  font-size: 16px;
+  min-height: 44px;
 }
 
 input[type='range'] {
@@ -178,6 +193,17 @@ input[type='range'] {
   border: 1px dashed var(--border);
 }
 
+.bigCenter.goStack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: auto;
+  min-height: 220px;
+  padding: 16px 12px;
+}
+
 .ready {
   font-size: 30px;
   color: var(--text-h);
@@ -189,6 +215,30 @@ input[type='range'] {
   font-weight: 800;
   letter-spacing: 2px;
   color: var(--text-h);
+}
+
+.goHint {
+  margin: 0;
+  text-align: center;
+  font-size: 15px;
+  line-height: 1.45;
+  max-width: 28rem;
+}
+
+.goTap {
+  touch-action: manipulation;
+  padding: 16px 32px;
+  font-size: 18px;
+  font-weight: 700;
+  border-radius: 14px;
+  border: 2px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.goTap:active {
+  transform: scale(0.98);
 }
 
 .feedback {

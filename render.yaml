@@ -1,10 +1,12 @@
+# 单服务：构建 web/dist 后由 Node 同时提供前端页面与 /api，被试与管理员共用一个公网域名。
+# 在 Render：New → Blueprint → 连接本仓库 → 选用此文件；记下自动生成的 EXPORT_TOKEN，磁盘用于 SQLite。
 services:
   - type: web
     name: crtt-api
     runtime: node
-    rootDir: server
-    buildCommand: npm install
-    startCommand: npm run start
+    rootDir: .
+    buildCommand: npm ci --prefix web && npm run build --prefix web && npm ci --prefix server
+    startCommand: npm --prefix server start
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
@@ -15,9 +17,12 @@ services:
         value: /var/data/data.sqlite3
       - key: EXPORT_TOKEN
         generateValue: true
-      # 部署后把你的 Cloudflare Pages 域名填进来（逗号分隔可填多个）
+      # 与 Render 给你的服务 URL 一致（不要末尾 /），/admin 生成邀请链接时会用
+      # - key: PUBLIC_WEB_URL
+      #   value: https://crtt-api.onrender.com
+      # 仅当把前端单独部署到别的域名时才需要（逗号分隔多个来源）
       # - key: CORS_ORIGIN
-      #   value: https://your-pages-domain.pages.dev
+      #   value: https://your-frontend.pages.dev
     disk:
       name: crtt-data
       mountPath: /var/data

@@ -1,0 +1,15 @@
+services:
+  crtt:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      EXPORT_TOKEN: ${EXPORT_TOKEN:?set EXPORT_TOKEN in .env or env}
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-}
+      CORS_ORIGIN: ${CORS_ORIGIN:-}
+    volumes:
+      - crtt-data:/data
+    restart: unless-stopped
+
+volumes:
+  crtt-data:

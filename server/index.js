@@ -1,3 +1,5 @@
+const path = require('path')
+const fs = require('fs')
 const express = require('express')
 const cors = require('cors')
 const { z } = require('zod')
@@ -7,6 +9,36 @@ const { stringify } = require('csv-stringify/sync')
 const { db } = require('./db')
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 12)
+const inviteNanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 18)
+
+function readExportToken(req) {
+  const auth = String(req.get('authorization') || '')
+  const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : ''
+  const body = req.body && typeof req.body === 'object' ? req.body.exportToken : undefined
+  const q = typeof req.query?.token === 'string' ? req.query.token : ''
+  return bearer || (typeof body === 'string' ? body : '') || q
+}
+
+function requireExportToken(req, res) {
+  const t = readExportToken(req)
+  if (!process.env.EXPORT_TOKEN || t !== process.env.EXPORT_TOKEN) {
+    res.status(401).json({ error: 'unauthorized' })
+    return null
+  }
+  return t
+}
+
+function inviteExpiredRow(row) {
+  if (!row?.expires_at) return false
+  return new Date(row.expires_at).getTime() <= Date.now()
+}
+
+function inviteSelectable(row) {
+  if (!row) return { ok: false, code: 'not_found' }
+  if (inviteExpiredRow(row)) return { ok: false, code: 'expired' }
+  if (row.use_count >= row.max_uses) return { ok: false, code: 'exhausted' }
+  return { ok: true }
+}
 
 const app = express()
 app.use(express.json({ limit: '200kb' }))
@@ -106,7 +138,76 @@ function generateCrttPlan({ trials = 25 } = {}) {
   return plan
 }
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, time: nowIso() }))
+function healthHandler(_req, res) {
+  res.json({ ok: true, time: nowIso() })
+}
+app.get('/api/health', healthHandler)
+app.get('/api/health/', healthHandler)
+
+app.get('/api/invite/:token', (req, res) => {
+  const token = String(req.params.token || '').trim()
+  if (token.length < 6 || token.length > 32) return res.status(400).json({ error: 'invalid_token' })
+
+  const row = db.prepare(`select * from invites where token = ?`).get(token)
+  const st = inviteSelectable(row)
+  if (!st.ok) {
+    const code = st.code === 'not_found' ? 404 : 410
+    return res.status(code).json({ error: st.code })
+  }
+
+  res.json({
+    ok: true,
+    participantId: row.participant_id || null,
+    locked: Boolean(row.participant_id),
+    label: row.label || null,
+  })
+})
+
+app.post('/api/admin/invites', (req, res) => {
+  if (!requireExportToken(req, res)) return
+
+  const schema = z.object({
+    participantId: z.string().min(1).max(64).optional().nullable(),
+    label: z.string().max(120).optional().nullable(),
+    maxUses: z.number().int().min(1).max(100).optional(),
+    expiresInDays: z.number().int().min(1).max(3650).optional().nullable(),
+  })
+  const parsed = schema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
+
+  let { participantId, label, maxUses, expiresInDays } = parsed.data
+  if (participantId != null && String(participantId).trim() === '') participantId = null
+  const pid = participantId != null ? String(participantId).trim() : null
+
+  let token = inviteNanoid()
+  for (let i = 0; i < 5; i++) {
+    const hit = db.prepare(`select 1 from invites where token = ?`).get(token)
+    if (!hit) break
+    token = inviteNanoid()
+  }
+
+  let expiresAt = null
+  if (expiresInDays != null) {
+    expiresAt = new Date(Date.now() + expiresInDays * 86400000).toISOString()
+  }
+
+  db.prepare(
+    `insert into invites (token, participant_id, label, max_uses, use_count, expires_at)
+     values (@token, @participant_id, @label, @max_uses, 0, @expires_at)`
+  ).run({
+    token,
+    participant_id: pid,
+    label: label != null ? String(label).trim() || null : null,
+    max_uses: maxUses ?? 1,
+    expires_at: expiresAt,
+  })
+
+  const path = `/?invite=${encodeURIComponent(token)}`
+  const base = (process.env.PUBLIC_WEB_URL || '').replace(/\/$/, '')
+  const fullUrl = base ? `${base}${path}` : null
+
+  res.json({ ok: true, token, path, fullUrl })
+})
 
 app.get('/admin', (_req, res) => {
   res.setHeader('content-type', 'text/html; charset=utf-8')
@@ -133,6 +234,18 @@ app.get('/admin', (_req, res) => {
       a.btn { text-decoration: none; color: inherit; }
       .hint { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; opacity: 0.85; }
       .err { margin-top: 10px; color: #b91c1c; }
+      .card + .card { margin-top: 16px; }
+      textarea.inviteOut {
+        width: 100%;
+        min-height: 88px;
+        box-sizing: border-box;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(120,120,140,0.35);
+        background: rgba(0,0,0,0.04);
+      }
     </style>
   </head>
   <body>
@@ -151,6 +264,39 @@ app.get('/admin', (_req, res) => {
         </div>
         <div id="err" class="err" style="display:none"></div>
         <p style="margin-top:12px" class="hint">导出接口：/api/export.csv?token=EXPORT_TOKEN</p>
+      </div>
+      <div class="card">
+        <h1>生成被试邀请链接</h1>
+        <p>将链接发给被试；对方在浏览器中打开并完成实验后，数据会自动写入数据库。导出 CSV 含 <span class="hint">invite_token</span> 列，便于核对招募来源。</p>
+        <label>
+          <div>前端公网地址（与发给被试打开的页面一致，不要以 / 结尾）</div>
+          <input id="webBase" placeholder="例如：https://你的站点.pages.dev" />
+        </label>
+        <label>
+          <div>被试 ID（可选）</div>
+          <input id="invPid" placeholder="留空：由被试自行填写；填写：链接内锁定该 ID" />
+        </label>
+        <label>
+          <div>备注（可选，仅用于后台记录）</div>
+          <input id="invLabel" placeholder="例如：批次 A / 预实验" />
+        </label>
+        <div class="row">
+          <label style="flex:1;min-width:160px">
+            <div>可用次数（同一链接可开始几次实验）</div>
+            <input id="maxUses" type="number" min="1" max="100" value="1" />
+          </label>
+          <label style="flex:1;min-width:160px">
+            <div>有效天数（留空表示不过期）</div>
+            <input id="expDays" type="number" min="1" max="3650" placeholder="留空" />
+          </label>
+        </div>
+        <div class="row">
+          <button id="mkInvite" type="button">生成邀请链接</button>
+          <button id="copyInvite" type="button" disabled>复制完整链接</button>
+        </div>
+        <textarea id="inviteOut" class="inviteOut" style="display:none;margin-top:10px" readonly></textarea>
+        <div id="inviteErr" class="err" style="display:none;margin-top:10px"></div>
+        <p class="hint" style="margin-top:10px">若在后端设置环境变量 <span class="hint">PUBLIC_WEB_URL</span>，接口响应会直接包含完整 <span class="hint">fullUrl</span>。</p>
       </div>
     </div>
     <script>
@@ -195,6 +341,72 @@ app.get('/admin', (_req, res) => {
           setErr('导出失败：网络错误。')
         }
       })
+
+      const webKey = 'crtt_public_web_url'
+      const $webBase = document.getElementById('webBase')
+      const $invPid = document.getElementById('invPid')
+      const $invLabel = document.getElementById('invLabel')
+      const $maxUses = document.getElementById('maxUses')
+      const $expDays = document.getElementById('expDays')
+      const $inviteOut = document.getElementById('inviteOut')
+      const $inviteErr = document.getElementById('inviteErr')
+      const $copyInvite = document.getElementById('copyInvite')
+      $webBase.value = (localStorage.getItem(webKey) || '')
+      let lastInviteUrl = ''
+      function setInviteErr(msg) {
+        if (!msg) { $inviteErr.style.display='none'; $inviteErr.textContent=''; return }
+        $inviteErr.style.display='block'; $inviteErr.textContent = msg
+      }
+      document.getElementById('mkInvite').addEventListener('click', async () => {
+        setInviteErr('')
+        const exportToken = ($token.value || '').trim()
+        if (!exportToken) { setInviteErr('请先填写 EXPORT_TOKEN'); return }
+        localStorage.setItem(webKey, ($webBase.value || '').trim())
+        let expiresInDays = null
+        const ed = String($expDays.value || '').trim()
+        if (ed !== '') {
+          const n = Number(ed)
+          if (!Number.isFinite(n) || n < 1) { setInviteErr('有效天数必须是正整数'); return }
+          expiresInDays = Math.min(3650, Math.floor(n))
+        }
+        const maxUses = Math.min(100, Math.max(1, Math.floor(Number($maxUses.value) || 1)))
+        try {
+          const r = await fetch('/api/admin/invites', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              exportToken,
+              participantId: ($invPid.value || '').trim() || null,
+              label: ($invLabel.value || '').trim() || null,
+              maxUses,
+              expiresInDays,
+            }),
+          })
+          const data = await r.json().catch(() => ({}))
+          if (!r.ok) {
+            setInviteErr('生成失败（HTTP ' + r.status + '）。请确认 EXPORT_TOKEN 正确。')
+            return
+          }
+          const base = ($webBase.value || '').trim().replace(/\\/+$/, '')
+          lastInviteUrl = data.fullUrl || (base ? base + data.path : '')
+          const lines = lastInviteUrl
+            ? (lastInviteUrl + '\\n\\n相对路径：' + data.path)
+            : ('请填写「前端公网地址」后复制；相对路径：' + data.path)
+          $inviteOut.style.display = 'block'
+          $inviteOut.value = lines
+          $copyInvite.disabled = !lastInviteUrl
+        } catch (err) {
+          setInviteErr('生成失败：网络错误')
+        }
+      })
+      $copyInvite.addEventListener('click', async () => {
+        if (!lastInviteUrl) return
+        try {
+          await navigator.clipboard.writeText(lastInviteUrl)
+        } catch (e) {
+          setInviteErr('复制失败：请手动全选文本框内容复制')
+        }
+      })
     </script>
   </body>
 </html>`)
@@ -203,15 +415,15 @@ app.get('/admin', (_req, res) => {
 app.post('/api/session/start', (req, res) => {
   const schema = z.object({
     participantId: z.string().min(1).max(64),
-    // Optional: if you want to import MD/CR later, you can omit these.
     md: z.number().finite().optional(),
     cr: z.number().finite().optional(),
     userAgent: z.string().max(512).optional(),
+    inviteToken: z.string().min(6).max(32).optional(),
   })
   const parsed = schema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
 
-  const { participantId, md, cr, userAgent } = parsed.data
+  const { participantId, md, cr, userAgent, inviteToken } = parsed.data
   const sessionId = nanoid()
 
   const upsertParticipant = db.prepare(`
@@ -221,14 +433,83 @@ app.post('/api/session/start', (req, res) => {
       md = coalesce(excluded.md, participants.md),
       cr = coalesce(excluded.cr, participants.cr)
   `)
-  upsertParticipant.run({ participant_id: participantId, md: md ?? null, cr: cr ?? null })
+  const insertSession = db.prepare(
+    `insert into sessions (session_id, participant_id, user_agent, invite_token)
+     values (?, ?, ?, ?)`
+  )
+  const bumpInvite = db.prepare(`
+    update invites set use_count = use_count + 1
+    where token = ? and use_count < max_uses
+  `)
 
-  db.prepare(
-    `insert into sessions (session_id, participant_id, user_agent) values (?, ?, ?)`
-  ).run(sessionId, participantId, userAgent ?? null)
+  try {
+    db.transaction(() => {
+      if (inviteToken) {
+        const inv = db.prepare(`select * from invites where token = ?`).get(inviteToken)
+        const st = inviteSelectable(inv)
+        if (!st.ok) {
+          const err = new Error(st.code)
+          err.code = st.code
+          throw err
+        }
+        if (inv.participant_id && inv.participant_id !== participantId) {
+          const err = new Error('participant_mismatch')
+          err.code = 'participant_mismatch'
+          throw err
+        }
+        const u = bumpInvite.run(inviteToken)
+        if (u.changes !== 1) {
+          const err = new Error('invite_exhausted')
+          err.code = 'invite_exhausted'
+          throw err
+        }
+      }
+
+      upsertParticipant.run({ participant_id: participantId, md: md ?? null, cr: cr ?? null })
+      insertSession.run(sessionId, participantId, userAgent ?? null, inviteToken ?? null)
+    })()
+  } catch (e) {
+    const code = e && e.code
+    if (code === 'not_found') return res.status(404).json({ error: 'invite_not_found' })
+    if (code === 'expired') return res.status(410).json({ error: 'invite_expired' })
+    if (code === 'exhausted' || code === 'invite_exhausted') {
+      return res.status(410).json({ error: 'invite_exhausted' })
+    }
+    if (code === 'participant_mismatch') return res.status(403).json({ error: 'participant_mismatch' })
+    throw e
+  }
 
   const plan = generateCrttPlan({ trials: 25 })
   res.json({ sessionId, plan })
+})
+
+app.post('/api/participant/scales', (req, res) => {
+  const schema = z.object({
+    participantId: z.string().min(1).max(64),
+    md: z.number().finite().nullable().optional(),
+    cr: z.number().finite().nullable().optional(),
+  })
+  const parsed = schema.safeParse(req.body)
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
+
+  const { participantId, md, cr } = parsed.data
+  const upsertParticipant = db.prepare(`
+    insert into participants (participant_id, md, cr)
+    values (@participant_id, @md, @cr)
+    on conflict(participant_id) do update set
+      md = coalesce(excluded.md, participants.md),
+      cr = coalesce(excluded.cr, participants.cr)
+  `)
+  upsertParticipant.run({
+    participant_id: participantId,
+    md: md ?? null,
+    cr: cr ?? null,
+  })
+
+  const row = db
+    .prepare(`select participant_id as participantId, md, cr from participants where participant_id = ?`)
+    .get(participantId)
+  res.json({ ok: true, participant: row })
 })
 
 app.post('/api/session/hook', (req, res) => {
@@ -351,6 +632,7 @@ app.get('/api/export.csv', (req, res) => {
     rows.push({
       participant_id: s.participant_id,
       session_id: s.session_id,
+      invite_token: s.invite_token ?? null,
       started_at: s.started_at,
       completed_at: s.completed_at,
       anger_rating: s.anger_rating,
@@ -368,9 +650,23 @@ app.get('/api/export.csv', (req, res) => {
   res.send(csv)
 })
 
+const WEB_DIST = path.join(__dirname, '..', 'web', 'dist')
+if (fs.existsSync(WEB_DIST)) {
+  app.use(express.static(WEB_DIST, { index: false }))
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next()
+    if (req.path.startsWith('/api')) {
+      return res.status(404).type('json').send({ error: 'api_not_found', path: req.path })
+    }
+    res.sendFile(path.join(WEB_DIST, 'index.html'), (err) => {
+      if (err) next(err)
+    })
+  })
+}
+
 const PORT = Number(process.env.PORT || 3001)
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   // eslint-disable-next-line no-console
-  console.log(`CRTT server listening on http://localhost:${PORT}`)
+  console.log(`CRTT server listening on port ${PORT}`)
 })
 

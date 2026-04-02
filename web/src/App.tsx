@@ -10,12 +10,36 @@ type CrttPlanItem = {
 
 type Step = 'login' | 'hook' | 'crtt' | 'done'
 
+type InviteGate = 'none' | 'loading' | 'ok' | 'error'
+
+const INTENSITY_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const
+const DURATION_OPTIONS = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5] as const
+
+function readInviteTokenFromUrl(): string | null {
+  const url = new URL(window.location.href)
+  return url.searchParams.get('invite') || url.searchParams.get('i')
+}
+
+/** 与研究一编号对齐：问卷跳转或独立链接上的常见参数名，见 README。 */
+function readPidFromUrl(): string {
+  const url = new URL(window.location.href)
+  return (
+    url.searchParams.get('pid') ||
+    url.searchParams.get('participant_id') ||
+    url.searchParams.get('rid') ||
+    url.searchParams.get('response_id') ||
+    ''
+  )
+}
+
 function App() {
   const [step, setStep] = useState<Step>('login')
-  const [participantId, setParticipantId] = useState(() => {
-    const url = new URL(window.location.href)
-    return url.searchParams.get('pid') ?? ''
-  })
+  const [participantId, setParticipantId] = useState(() => readPidFromUrl())
+  const [participantIdLocked, setParticipantIdLocked] = useState(false)
+  const [inviteGate, setInviteGate] = useState<InviteGate>(() =>
+    readInviteTokenFromUrl() ? 'loading' : 'none'
+  )
+  const [inviteError, setInviteError] = useState<string | null>(null)
   const [consented, setConsented] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -30,7 +54,6 @@ function App() {
   } | null>(null)
 
   const [hookStartIso, setHookStartIso] = useState<string | null>(null)
-  const [hookEndIso, setHookEndIso] = useState<string | null>(null)
   const [anger, setAnger] = useState<number>(5)
   const [hookCanContinue, setHookCanContinue] = useState(false)
 
@@ -41,6 +64,9 @@ function App() {
   const [goAt, setGoAt] = useState<number | null>(null)
   const [rtMs, setRtMs] = useState<number | null>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
+
+  const goReactionHandledRef = useRef(false)
+  const commitGoReactionRef = useRef<() => void>(() => {})
 
   function intensityToGain(intensity01to10: number) {
     // Browser volume is not calibrated dB. We cap for safety.
@@ -110,16 +136,69 @@ function App() {
     source.stop(t0 + dur / 1000 + 0.01)
   }
 
+  useEffect(() => {
+    const token = readInviteTokenFromUrl()
+    if (!token) return
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await apiFetch(`/api/invite/${encodeURIComponent(token)}`)
+        if (cancelled) return
+        if (r.status === 404) {
+          setInviteGate('error')
+          setInviteError('邀请链接无效。')
+          return
+        }
+        if (r.status === 410) {
+          setInviteGate('error')
+          setInviteError('邀请链接已失效、已用完或已过期。')
+          return
+        }
+        if (!r.ok) {
+          setInviteGate('error')
+          setInviteError(`无法验证邀请链接（HTTP ${r.status}）。`)
+          return
+        }
+        const data = (await r.json()) as {
+          ok?: boolean
+          participantId?: string | null
+        }
+        if (!data.ok) {
+          setInviteGate('error')
+          setInviteError('邀请链接无效。')
+          return
+        }
+        if (data.participantId) {
+          setParticipantId(data.participantId)
+          setParticipantIdLocked(true)
+        }
+        setInviteGate('ok')
+      } catch {
+        if (!cancelled) {
+          setInviteGate('error')
+          setInviteError('无法验证邀请链接（网络错误）。')
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   async function startSession() {
     setBusy(true)
     setError(null)
     try {
+      const inv = readInviteTokenFromUrl()
       const r = await apiFetch('/api/session/start', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           participantId: participantId.trim(),
           userAgent: navigator.userAgent,
+          inviteToken: inv ?? undefined,
         }),
       })
       if (!r.ok) throw new Error(`start_failed_${r.status}`)
@@ -144,7 +223,6 @@ function App() {
     setError(null)
     try {
       const end = new Date().toISOString()
-      setHookEndIso(end)
       const r = await apiFetch('/api/session/hook', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -206,23 +284,6 @@ function App() {
     }
   }
 
-  function currentPlanItem() {
-    if (!plan) return null
-    return plan[trialIndex] ?? null
-  }
-
-  function beginReaction() {
-    setPhase('wait')
-    setFeedback(null)
-    setRtMs(null)
-    setGoAt(null)
-    const delay = 700 + Math.floor(Math.random() * 900) // 700-1600ms
-    window.setTimeout(() => {
-      setGoAt(performance.now())
-      setPhase('go')
-    }, delay)
-  }
-
   function finishAndAdvance(nextIndex: number) {
     if (!plan) return
     if (nextIndex >= plan.length) {
@@ -238,82 +299,120 @@ function App() {
     setRtMs(null)
   }
 
+  function beginReaction() {
+    goReactionHandledRef.current = false
+    setPhase('wait')
+    setFeedback(null)
+    setRtMs(null)
+    setGoAt(null)
+    const delay = 700 + Math.floor(Math.random() * 900) // 700-1600ms
+    window.setTimeout(() => {
+      goReactionHandledRef.current = false
+      setGoAt(performance.now())
+      setPhase('go')
+    }, delay)
+  }
+
+  commitGoReactionRef.current = () => {
+    if (phase !== 'go' || goAt == null) return
+    if (goReactionHandledRef.current) return
+    const item = plan?.[trialIndex] ?? null
+    if (!item) return
+    goReactionHandledRef.current = true
+
+    const rt = Math.max(0, Math.round(performance.now() - goAt))
+    setRtMs(rt)
+    setPhase('feedback')
+
+    const pDurMs = Math.round(durationSec * 1000)
+    const opp = item.opponent
+    const oppIntensity = opp ? opp.intensity : null
+    const oppDur = opp ? opp.durationMs : null
+
+    const msg =
+      item.outcome === 'loss'
+        ? `这轮你慢了一点，算你输。按游戏规则，你要接受一段声音惩罚：白噪音约 ${oppIntensity} 档响度、${Math.round(
+            (oppDur ?? 0) / 100
+          ) / 10} 秒（游戏伙伴 B 在开始前设好的）。`
+        : '这轮你更快，算你赢。这一轮不用接受声音惩罚。'
+    setFeedback(msg)
+
+    if (item.outcome === 'loss' && audioEnabled && oppIntensity != null && oppDur != null) {
+      playWhiteNoise({ gain: intensityToGain(oppIntensity), durationMs: oppDur })
+    }
+
+    void submitTrial({
+      trialIndex,
+      outcome: item.outcome,
+      participantRtMs: rt,
+      participantIntensity: intensity,
+      participantDurationMs: pDurMs,
+      opponentIntensity: oppIntensity,
+      opponentDurationMs: oppDur,
+    }).catch((e) => setError(e instanceof Error ? e.message : 'trial_failed'))
+
+    window.setTimeout(() => finishAndAdvance(trialIndex + 1), 1200)
+  }
+
   useEffect(() => {
-    if (step !== 'crtt') return
-    if (phase !== 'go') return
+    if (step !== 'crtt' || phase !== 'go') return
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.code !== 'Space') return
       ev.preventDefault()
-      if (goAt == null) return
-      const rt = Math.max(0, Math.round(performance.now() - goAt))
-      setRtMs(rt)
-      setPhase('feedback')
-
-      const item = currentPlanItem()
-      if (!item) return
-
-      const pDurMs = Math.round(durationSec * 1000)
-      const opp = item.opponent
-      const oppIntensity = opp ? opp.intensity : null
-      const oppDur = opp ? opp.durationMs : null
-
-      const msg =
-        item.outcome === 'loss'
-          ? `你输了。本轮你将收到对手设置的噪音（强度 ${oppIntensity}，时长 ${Math.round(
-              (oppDur ?? 0) / 100
-            ) / 10}s）。`
-          : '你赢了。本轮你不会收到噪音。'
-      setFeedback(msg)
-
-      // Real stimulus: play opponent noise only when participant loses.
-      if (item.outcome === 'loss' && audioEnabled && oppIntensity != null && oppDur != null) {
-        playWhiteNoise({ gain: intensityToGain(oppIntensity), durationMs: oppDur })
-      }
-
-      void submitTrial({
-        trialIndex,
-        outcome: item.outcome,
-        participantRtMs: rt,
-        participantIntensity: intensity,
-        participantDurationMs: pDurMs,
-        opponentIntensity: oppIntensity,
-        opponentDurationMs: oppDur,
-      }).catch((e) => setError(e instanceof Error ? e.message : 'trial_failed'))
-
-      window.setTimeout(() => finishAndAdvance(trialIndex + 1), 1200)
+      commitGoReactionRef.current()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [step, phase, goAt, durationSec, intensity, trialIndex, plan])
+  }, [step, phase])
 
   return (
     <div className="page">
       <header className="topbar">
-        <div className="brand">CRTT 在线实验</div>
-        <div className="meta">
-          {sessionId ? <span className="pill">session: {sessionId}</span> : null}
-        </div>
+        <div className="brand">在线实验任务</div>
+        <div className="meta" />
       </header>
 
       <main className="card">
-        {error ? <div className="error">错误：{error}</div> : null}
+        {error ? <div className="error">出错了：{error}</div> : null}
 
         {step === 'login' ? (
           <>
-            <h1>参与实验</h1>
-            <p className="muted">
-              请输入你的被试 ID（与研究一一致）。本实验会记录你在任务中的按键反应时，以及你对对手设置的噪音惩罚强度与时长。
+            <h1>欢迎参与</h1>
+            <p className="muted notice">
+              <strong>你需要准备：</strong>一台能出声的手机、平板或电脑；用 <strong>Chrome</strong>、<strong>Safari（iPhone）</strong> 或 <strong>Edge</strong> 打开本页。若用电脑，任务二中可用<strong>空格键</strong>反应；手机和平板请用屏幕上出现的<strong>大按钮</strong>反应。
+              <br />
+              <strong>你要做的：</strong>填好下面的编号 → 勾选同意 → 点一次「启用声音」→ 点「开始」。编号请填<strong>通知或邮件里给你的那个</strong>；若你参加过本课题组别的线上任务，填<strong>当时同一个编号</strong>。若是点链接进来的，<strong>不要改地址栏里的内容</strong>。
             </p>
+            {readInviteTokenFromUrl() ? (
+              <p className="muted">
+                下面会分几步走，按屏幕提示做就行。请不要和别人讨论题目细节。
+              </p>
+            ) : (
+              <p className="muted">
+                我们会记录你按键有多快，以及你在任务里填的一些设置。请自己完成，不要把题目内容告诉别人。
+              </p>
+            )}
+
+            {inviteGate === 'loading' ? (
+              <p className="muted">正在验证邀请链接…</p>
+            ) : null}
+            {inviteGate === 'error' && inviteError ? (
+              <div className="error">邀请链接：{inviteError}</div>
+            ) : null}
 
             <label className="field">
-              <div className="label">被试 ID</div>
+              <div className="label">编号</div>
               <input
                 value={participantId}
                 onChange={(e) => setParticipantId(e.target.value)}
-                placeholder="例如：S0123"
+                placeholder="与通知中一致"
                 autoComplete="off"
+                readOnly={participantIdLocked}
               />
             </label>
+            {participantIdLocked ? (
+              <p className="muted">当前链接已绑定编号，无需修改。</p>
+            ) : null}
 
             <label className="checkbox">
               <input
@@ -321,13 +420,14 @@ function App() {
                 checked={consented}
                 onChange={(e) => setConsented(e.target.checked)}
               />
-              <span>我已阅读并同意参与本研究（可随时退出）。</span>
+              <span>我已经看过知情同意书里的说明，愿意参加；中途随时可以退出。</span>
             </label>
 
             <div className="audioBox">
-              <div className="label">声音刺激</div>
+              <div className="label">声音</div>
               <p className="muted">
-                任务中可能出现短暂白噪音作为惩罚刺激。请将系统音量调至舒适水平，然后点击一次“启用声音”（浏览器需要用户手势授权）。
+                在这个小游戏里，<strong>谁输了，就可能要被罚听一段「沙沙」的白噪音</strong>——声音的<strong>响</strong>和<strong>持续多久</strong>，就是游戏规则里规定的<strong>惩罚手段</strong>（像游戏里扣血、罚时一样，只是这里用声音来表现）。
+                请先把电脑音量调到你觉得<strong>舒服、不刺耳</strong>，再点下面按钮<strong>开声音</strong>（浏览器规定必须你亲手点一下才给播声音）。
               </p>
               <button className="secondary" onClick={() => void enableAudio()}>
                 {audioEnabled ? '已启用声音' : '启用声音'}
@@ -336,36 +436,45 @@ function App() {
 
             <button
               className="primary"
-              disabled={busy || !consented || participantId.trim().length < 1 || !audioEnabled}
+              disabled={
+                busy ||
+                !consented ||
+                participantId.trim().length < 1 ||
+                !audioEnabled ||
+                (readInviteTokenFromUrl() != null && inviteGate !== 'ok')
+              }
               onClick={() => void startSession()}
             >
-              {busy ? '启动中…' : '开始'}
+              {busy ? '请稍候…' : '开始'}
             </button>
           </>
         ) : null}
 
         {step === 'hook' ? (
           <>
-            <h1>情景阅读</h1>
+            <h1>任务一：阅读环节</h1>
             <p className="muted">
-              请仔细阅读并设身处地想象下面情景。为保证操纵有效性，阅读至少 1 分钟后才能继续。
+              稍后会有一位<strong>游戏伙伴</strong>和你一起完成有奖小任务，下面用 <strong>游戏伙伴 B</strong> 来称呼他/她。
+              <strong>现在请你先读下面这段故事</strong>，把它当成你和<strong>游戏伙伴 B</strong> 目前是怎么搭档的。请<strong>至少读满大约 1 分钟</strong>再点下面的按钮（页面会帮你计时）。
             </p>
 
             <div className="script">
               <p>
-                请阅读以下情景并设身处地地想象：这学期你与 Partner B 组成小组完成一门核心课程的大作业。在过去的一个月里，
-                你为了获得高绩点，主动承担了查阅文献、数据分析、撰写报告和 PPT 制作的所有工作（高投入），每天熬夜到两点，
-                甚至为此推掉了很多娱乐活动。而 Partner B 借口“忙于实习”或“身体不适”，拒绝承担任何实质性工作，仅在汇报前一天象征性地修改了几个错别字（低投入）。
+                请阅读以下情景并设身处地地想象：这学期你与游戏伙伴 B 组成小组完成一门核心课程的大作业。在过去的一个月里，
+                你为了获得高绩点，主动承担了查阅文献、数据分析、撰写报告和 PPT 制作的所有工作，每天熬夜到两点，
+                甚至为此推掉了很多娱乐活动。而游戏伙伴 B 借口“忙于实习”或“身体不适”，拒绝承担任何实质性工作，仅在汇报前一天象征性地修改了几个错别字。
               </p>
               <p>
-                最终，老师给你们小组打了 90 分的高分。根据规则，你们两人获得了相同的绩点。更让你难以接受的是，Partner B 因为这个高绩点，
-                刚刚获得了你梦寐以求的“国家奖学金”，而你却因为微弱的差距落选了（同酬且资源被剥夺）。你现在看着 Partner B，他/她正在群里炫耀自己的奖学金，
-                并表示“全靠运气”。请花一分钟时间，充分体会你现在的感受。
+                最终，老师给你们小组打了 90 分的高分。根据规则，你们两人获得了相同的绩点。更让你难以接受的是，游戏伙伴 B 因为这个高绩点，
+                刚刚获得了你梦寐以求的“国家奖学金”，而你却因为微弱的差距落选了。
+              </p>
+              <p>
+                你现在看着游戏伙伴 B，他/她正在群里炫耀自己的奖学金，并表示“全靠运气”。请花一分钟时间，充分体会你现在的感受。
               </p>
             </div>
 
             <label className="field">
-              <div className="label">此刻你有多愤怒？（1-9）</div>
+              <div className="label">读完以后，你觉得现在有多生气？（1 = 几乎不生气，9 = 非常生气）</div>
               <input
                 type="range"
                 min={1}
@@ -374,7 +483,7 @@ function App() {
                 value={anger}
                 onChange={(e) => setAnger(Number(e.target.value))}
               />
-              <div className="rangeValue">{anger}</div>
+              <div className="rangeValue">你选的分数：{anger}</div>
             </label>
 
             <button
@@ -382,63 +491,94 @@ function App() {
               disabled={busy || !hookCanContinue}
               onClick={() => void submitHook()}
             >
-              {hookCanContinue ? (busy ? '提交中…' : '进入任务') : '请继续阅读（计时 60 秒）…'}
+              {hookCanContinue ? (busy ? '提交中…' : '我读完了，继续') : '请再读一会儿（未满约 60 秒还不能继续）…'}
             </button>
           </>
         ) : null}
 
         {step === 'crtt' ? (
           <>
-            <h1>竞争反应时任务（CRTT）</h1>
+            <h1>任务二：电脑反应时环节</h1>
             <p className="muted">
-              共 25 轮。每轮开始前，请为对手设置：噪音强度（1-10）和持续时间（0-5 秒）。设置后点击“开始本轮”，随后看到“GO”请尽快按空格键。
+              这一环节一共 <strong>25 轮</strong>，每轮你和 <strong>游戏伙伴 B</strong> 比<strong>谁按键更快</strong>。
+            </p>
+            <p className="muted">
+              <strong>每一轮怎么操作（按顺序）：</strong>
+              <br />
+              ① 先在下面用<strong>下拉框</strong>选两项：这是在给游戏伙伴 B 设定<strong>游戏惩罚</strong>——<strong>万一这轮你赢了、他输了</strong>，他要被罚听一段白噪音（像收音机没台时的沙沙声），<strong>多响、响多久</strong>就由这两项决定。
+              <br />
+              ② 点「开始本轮」。
+              <br />
+              ③ 等一会儿，屏幕上会出现大大的「<strong>GO</strong>」，<strong>一看到就马上反应</strong>：<strong>电脑按空格键</strong>，<strong>手机或平板点下面的「我按了」按钮</strong>。
+              <br />
+              ④ 谁按得快，谁赢这一轮。<strong>输了的人</strong>要按规则接受对方设好的<strong>声音惩罚</strong>（那段白噪音）；赢了这一轮就不用受罚。
+            </p>
+            <p className="muted">
+              <strong>关于上面两项（都是在设定「惩罚」有多重）：</strong>第一个在 1～10 里选，表示惩罚声音有多响（数字越大越响；大致从轻到很响，约相当于 60～105 分贝那种概念，你这台设备实际多大以你听到的为准）。第二个在 0～5 秒里选（含 0.5 秒一档），表示这个惩罚声音要<strong>持续响多少秒</strong>。<strong>两项越大，这一轮里对方一旦输了，受到的惩罚就越重。</strong>
             </p>
 
             <div className="statusRow">
-              <div className="pill">轮次：{trialIndex + 1} / {plan?.length ?? 25}</div>
-              {rtMs != null ? <div className="pill">反应时：{rtMs} ms</div> : null}
+              <div className="pill">第 {trialIndex + 1} 轮，共 {plan?.length ?? 25} 轮</div>
+              {rtMs != null ? <div className="pill">你按键：{rtMs} 毫秒</div> : null}
             </div>
 
             {phase === 'set' ? (
               <>
                 <div className="grid2">
                   <label className="field">
-                    <div className="label">你设置的噪音强度（1-10）</div>
-                    <input
-                      type="number"
-                      min={1}
-                      max={10}
+                    <div className="label">游戏惩罚有多响（1 最轻，10 最响）</div>
+                    <select
+                      className="crttSelect"
                       value={intensity}
                       onChange={(e) => setIntensity(Number(e.target.value))}
-                    />
+                    >
+                      {INTENSITY_OPTIONS.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <label className="field">
-                    <div className="label">你设置的噪音时长（秒，0-5）</div>
-                    <input
-                      type="number"
-                      min={0}
-                      max={5}
-                      step={0.5}
+                    <div className="label">惩罚声音持续几秒（0～5，含半秒一档）</div>
+                    <select
+                      className="crttSelect"
                       value={durationSec}
                       onChange={(e) => setDurationSec(Number(e.target.value))}
-                    />
+                    >
+                      {DURATION_OPTIONS.map((d) => (
+                        <option key={d} value={d}>
+                          {d} 秒
+                        </option>
+                      ))}
+                    </select>
                   </label>
                 </div>
                 <button className="primary" onClick={beginReaction}>
-                  开始本轮
+                  选好了，开始这一轮
                 </button>
               </>
             ) : null}
 
             {phase === 'wait' ? (
               <div className="bigCenter">
-                <div className="ready">Ready…</div>
+                <div className="ready">请等待…</div>
               </div>
             ) : null}
 
             {phase === 'go' ? (
-              <div className="bigCenter">
-                <div className="go">GO（按空格）</div>
+              <div className="bigCenter goStack">
+                <div className="go">GO</div>
+                <p className="goHint muted">
+                  电脑：按<strong>空格</strong>；手机/平板：点下面按钮。
+                </p>
+                <button
+                  type="button"
+                  className="goTap"
+                  onClick={() => commitGoReactionRef.current()}
+                >
+                  我按了
+                </button>
               </div>
             ) : null}
 
@@ -450,14 +590,14 @@ function App() {
 
         {step === 'done' ? (
           <>
-            <h1>完成</h1>
-            <p className="muted">感谢参与。你现在可以关闭页面。</p>
+            <h1>全部完成</h1>
+            <p className="muted">谢谢你的参与，到这里就结束了，可以把网页关掉。</p>
           </>
         ) : null}
       </main>
 
       <footer className="footer">
-        <span className="muted">研究二：机制验证（实验室情景实验 - 线上实现）</span>
+        <span className="muted">在线实验</span>
       </footer>
     </div>
   )

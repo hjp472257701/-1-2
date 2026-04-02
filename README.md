@@ -1,6 +1,6 @@
 # CRTT 线上实验系统（研究二）
 
-本项目提供一个可线上运行的数据收集系统，用于实现：
+本项目提供一个可线上运行的数据收集系统。被试端**同工不同酬脚本**与**反应时+白噪音任务的操作说明**与实验室方案一致；界面**标题/页脚**不显示 CRTT 等范式缩写以降低要求特征。数据库字段名为 `anger_rating`、`md`、`cr` 等。用于实现：
 - 情景启动脚本 + 愤怒评分（1-9）
 - 25 轮 Competitive Reaction Time Task（CRTT）
 - 逐步升级的挑衅（对手在“你输”的试次里噪音强度从 2 升到 9）
@@ -41,21 +41,202 @@ npm run dev
 /admin
 ```
 
-CSV 每行是一个 `session`，包含：
-- `anger_rating`
-- `md` / `cr`（可选：在 `/api/session/start` 传入，或后续你可扩展一个“导入研究一量表”的接口）
-- `dv1_unprovoked`：第一次收到惩罚前（第一次 loss 之前）的平均惩罚 \(强度 × 秒\)
-- `dv2_provoked`：第一次收到惩罚之后（第一次 loss 之后）的平均惩罚 \(强度 × 秒\)
-- `trials_json`：该 session 的所有 trial 明细 JSON（方便复算/质控）
+CSV **每一行 = 一名被试完成的一次完整实验**（一个 `session`）。主要列含义如下（用 Excel / WPS 打开即可）：
 
-## 部署提示（最小化）
+| 列名 | 通俗含义 |
+|------|----------|
+| `participant_id` | 被试当时填的编号 |
+| `session_id` | 系统自动生成的本场次 ID（防重复、查日志用） |
+| `invite_token` | 若用邀请链接进入，这里有令牌；没用链接则多为空 |
+| `started_at` | 点「开始」进入实验的时间 |
+| `completed_at` | 做完 25 轮点结束的时间；空 = 可能中途退出 |
+| `anger_rating` | 任务一里「有多生气」1–9 分 |
+| `md` / `cr` | 研究一量表分；被试端已不填写，需用下方 **量表导入接口** 按编号写入，否则多为空 |
+| `first_loss_index` | **第几轮（从 0 算起）第一次算「你输了」**；用于划分挑衅前后 |
+| `dv1_unprovoked` | **第一次输之前**，被试设的惩罚「强度×秒」的平均值（无挑衅阶段） |
+| `dv2_provoked` | **第一次输之后**，同上平均值（挑衅后的反应性指标） |
+| `trials_json` | **25 轮每一笔**的明细，一个单元格里是一整段 JSON 文本 |
 
-后端是标准 Node/Express 服务，环境变量：
-- `PORT`：默认 3001
-- `DB_PATH`：SQLite 文件路径（默认 `server/data.sqlite3`）
-- `EXPORT_TOKEN`：导出保护令牌
+**`trials_json` 里每一条**大致对应：`trial_index`（第几轮 0–24）、`outcome`（`win`/`loss` 相对被试）、`participant_rt_ms`（按空格的反应毫秒）、`participant_intensity` / `participant_duration_ms`（被试为对方设的响度与时长）、`opponent_intensity` / `opponent_duration_ms`（本轮若被试输，程序施加的惩罚参数）。用 Excel 看 JSON 不便时，可复制到 [jsonformatter.org](https://jsonformatter.org) 或导入 R/Python 解析。
 
-前端通过 Vite 代理 `/api` 到后端；生产部署时可把前端构建产物交给任意静态托管，并把 `/api` 反代到后端即可。
+被试首页已不再显示 MD/CR；若需要与问卷合并，仍可用 `POST /api/participant/scales` 按 `participant_id` 写入。
+
+## 给被试发链接（邀请链接）
+
+典型流程：**管理员页生成链接 → 发给被试 → 被试在浏览器完成实验 → 你导出 CSV**。
+
+1. 打开后端上的管理员页：`https://你的API域名/admin`（本地为 `http://localhost:3001/admin`）。
+2. 填写 `EXPORT_TOKEN`，在「生成被试邀请链接」里填写**前端公网地址**（与发给被试打开的页面一致，例如 Cloudflare Pages 的 `https://xxx.pages.dev`）。
+3. 可选填写「被试 ID」：留空则被试自己输入；填写则链接打开后**锁定**为该 ID。
+4. 点击生成，复制完整链接发给被试。
+
+被试打开的地址形如：
+
+```text
+https://你的前端域名/?invite=xxxxxxxxxxxxxxxxxx
+```
+
+也可使用短参数：`?i=同一串令牌`（与 `?invite=` 等价）。
+
+后端环境变量（可选）：
+
+- `PUBLIC_WEB_URL`：与前端公网地址相同（不要末尾 `/`）。设置后，`POST /api/admin/invites` 的 JSON 响应里会直接带上 `fullUrl`，方便脚本或自动化使用。
+
+公开接口（被试浏览器会调用）：
+
+- `GET /api/invite/:token`：校验邀请是否有效，并返回是否锁定被试 ID。
+
+### 研究一（问卷）与研究二（本任务）分开展施测
+
+本仓库实现的是**研究二**（在线 CRTT）。若**研究一**为网络问卷，两者通常**有关联**（如同一批被试、需合并分析），但**不必同一天、也不必从问卷页立刻跳转**完成。数据上靠 **「被试编号一致」** 把两次研究对齐即可。
+
+**被试编号（最重要）**  
+在研究一中为每位被试分配或让其记住的 ID，在研究二登录页填写**完全相同**的编号。若使用邀请链接，可在 `/admin` 生成链接时**锁定**该编号，减少填错。
+
+**研究一中的量表分（如 MD/CR）**  
+可在研究二开始前通过 `POST /api/participant/scales` 按 `participantId` 写入（见下文），或在研究二登录页的 MD/CR 可选栏填写——只要 `participantId` 一致，导出 CSV 会与该被试对齐。
+
+**发放研究二链接的时机（与研究一非同时）**  
+常见做法：研究一结束后**另行**通过邮件/微信/群公告发送研究二链接（或一人一链），说明「请在与研究一**相同编号**下完成」。不要求被试在答问卷当下立刻点开 CRTT。
+
+**若问卷平台仍提供「跳转 URL」功能（可选）**  
+仅当你希望从研究一**当场**跳转到研究二时使用；分开展施测时多数团队**不用跳转**，只发独立链接即可。若使用跳转，可把作答编号拼进 URL 预填「被试 ID」。前端按顺序识别：
+
+- `pid`
+- `participant_id`
+- `rid`
+- `response_id`
+
+示例（花括号内换成平台可插入的字段）：
+
+```text
+https://你的前端域名/?pid={研究一中使用的被试或作答ID}
+https://你的前端域名/?invite=邀请令牌&pid={作答ID}
+```
+
+若邀请链接已锁定被试 ID，则无需再传 `pid`。
+
+**给被试的说明文案示例（研究二单独发放时）**  
+「感谢完成研究一。请在方便时使用电脑打开以下链接完成研究二（约 15–20 分钟），浏览器请用 **Chrome 或 Edge**，需键盘与声音；**请勿使用手机**。登录时请填写与**研究一相同**的被试编号。」
+
+**伦理**  
+研究一问卷中的知情同意、报酬等已覆盖的部分，研究二页面仍保留简要同意勾选；具体以伦理批件为准。
+
+## 量表导入接口（研究一 MD/CR）
+
+研究一问卷中已测得的 MD/CR 等分数，可在本任务开始前按 `participantId` 写入（与问卷、本任务**不必同一天完成**）。可调用：
+
+```text
+POST /api/participant/scales
+content-type: application/json
+{
+  "participantId": "S0123",
+  "md": 3.25,
+  "cr": 4.1
+}
+```
+
+说明：
+- `md` / `cr` 可选，支持单独更新其中一个字段。
+- 同一 `participantId` 会自动 upsert（存在则更新，不存在则创建）。
+
+## 网络发布与收数（推荐：Render 单服务）
+
+当前实现为 **同一公网地址** 同时提供：
+
+- 被试打开的 **前端页面**（`/`）
+- **API**（`/api/...`）
+- 管理页 **`/admin`**（导出 CSV、生成邀请链接）
+
+构建时先把 `web` 打成 `web/dist`，生产环境下 **Node 会托管该目录**；被试请求仍走相对路径 `/api`，无需配置 `VITE_API_BASE`。
+
+### Render 部署步骤
+
+1. 把代码推到 GitHub。
+2. 打开 [Render](https://render.com) → **New** → **Blueprint** → 选择本仓库 → 确认使用根目录的 `render.yaml`。
+3. 创建时务必挂上 **Disk**（蓝图里已写 `crtt-data` → `/var/data`），否则 SQLite 数据在重部署后会丢。
+4. 部署完成后，在 Render 面板查看服务 URL（例如 `https://crtt-api.onrender.com`），把该地址发给被试即可访问实验。
+5. 在 **Environment** 里复制自动生成的 **`EXPORT_TOKEN`**；打开 `https://你的服务域名/admin` 下载数据或生成邀请链接。
+6. （可选）设置 **`PUBLIC_WEB_URL`** = 与上面服务 URL 完全一致（不要末尾 `/`），便于管理页生成完整邀请链接。
+
+免费实例冷启动较慢，正式收数可考虑付费档或提醒被试首次多等几秒。
+
+### 不想用 Render / 绑卡不成功时
+
+**A）任意云服务器 + Docker（常用、支付方式多）**  
+很多国内/海外厂商的「轻量应用服务器」支持**微信/支付宝或对公转账**，不必依赖 Render 绑国际信用卡。
+
+1. 买一台最小配置 Linux（Ubuntu 22.04 等），安全组/防火墙**放行 3001**（或你映射的端口）。
+2. 安装 Docker 与 Docker Compose。
+3. 把本仓库拷到服务器（`git clone` 或上传）。
+4. 在仓库根目录：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少设置 EXPORT_TOKEN
+
+docker compose up -d --build
+```
+
+5. 浏览器访问 `http://服务器公网IP:3001`，`/admin` 同上。数据在 Docker 卷 `crtt-data` 里，**备份该卷或定期下载 CSV**。
+
+**B）本机运行 + Cloudflare Tunnel（不租服务器、预实验）**  
+适合**小规模试测**：电脑开着服务，用免费隧道临时给出公网链接，**一般不需要在 Cloudflare 绑卡**（仅需注册账号做隧道授权）。
+
+1. 本机：`npm run build && export EXPORT_TOKEN="你的口令" && npm start`（端口 3001）。
+2. 安装 [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) 后执行：
+
+```bash
+cloudflared tunnel --url http://localhost:3001
+```
+
+终端里会出现 `https://xxxx.trycloudflare.com` 一类地址，**发给被试即可**；你关机或关终端后链接失效。正式收数仍建议用长期在线的 VPS + Docker。
+
+**隧道是否稳定？多人同时做会不会把服务弄崩？**
+
+- **Cloudflare 侧**：Quick Tunnel（`--url` 临时域名）走的是 Cloudflare 正式隧道基础设施，一般**不会因为「多几个人同时打开网页」就整体瘫痪**；更常见的不稳定来自**你本机关机、合盖睡眠、断网、换 Wi‑Fi** 或 **cloudflared 进程被关掉**。
+- **本机程序侧**：Node + Express 同时处理多名被试的常规请求（读情景、提交 trial、写 SQLite）在**小规模并发**（例如同时在线十余人、每人 25 轮逐步提交）下通常**不会单纯因为并发而崩溃**。数据库已开 **WAL**，短事务下并发写一般会排队完成，极端情况下可能出现个别请求**稍慢或偶发失败**（页面重试或损失单条 trial 的风险），而不是整进程「炸掉」。
+- **真正的瓶颈**往往是：家用宽带的**上行带宽**、电脑长期高负载、或 SQLite 在**极高并发写**下的锁等待。若预计**同时大量被试**或需要 **7×24 收数**，仍更稳妥用 **VPS + Docker**（或云数据库方案），不要把研究完全押在一台会睡眠的个人电脑上。
+
+**C）其他 PaaS（自行查看是否需绑卡）**  
+例如 [Zeabur](https://zeabur.com)、[Koyeb](https://www.koyeb.com) 等，支持从 GitHub 部署容器；若提供 Dockerfile，可将本仓库按「Docker 部署」思路接入。是否免卡、是否持久盘以各平台说明为准。
+
+仓库根目录已提供 **`Dockerfile`**、**`docker-compose.yml`**、**`.env.example`**，与 Render 使用同一套 Node 托管 `web/dist` 的逻辑。
+
+### 本地模拟生产（自检）
+
+```bash
+cd "/Users/hujunpeng/Documents/cloude code"
+npm run build
+export EXPORT_TOKEN="local-test"
+npm start
+```
+
+浏览器访问 `http://localhost:3001`（页面）与 `http://localhost:3001/api/health`。
+
+**若浏览器打开 `/api/health` 显示 404 或 “invalid response”：**
+
+1. 确认终端里**正在运行**的是 `npm start`（或 `node server/index.js`），且日志里有 `listening on port 3001`，**不要**只用 `vite preview` / `npx serve` 等只托管 `dist` 的命令占 3001——那样没有 `/api`，必 404。
+2. 先执行过 **`npm run build`**，再 `npm start`（与线上一致）。
+3. 另开一个终端执行：`curl -s http://127.0.0.1:3001/api/health`  
+   - 若这里有 JSON，而浏览器不行：检查是否用了 **https://** 访问（应使用 **http://**），或关闭代理/VPN 再试。  
+   - 若 curl 也是 404：执行 `lsof -i :3001` 看 3001 上是不是别的程序，关掉后重新 `npm start`。
+
+### 环境变量说明
+
+| 变量 | 说明 |
+|------|------|
+| `PORT` | 监听端口（Render 上一般为 10000） |
+| `DB_PATH` | SQLite 路径；生产建议 `/var/data/data.sqlite3` |
+| `EXPORT_TOKEN` | 导出 CSV、创建邀请链接等管理操作口令 |
+| `PUBLIC_WEB_URL` | 可选；与对外访问的根 URL 一致，便于生成邀请链接 |
+| `CORS_ORIGIN` | **仅当**前端与 API 不同域名时填写，英文逗号分隔 |
+
+### 前端单独托管（可选）
+
+若你把 `web/dist` 放到 Cloudflare Pages / Netlify 等，需在构建时设置 **`VITE_API_BASE`** = API 根地址，并在后端配置 **`CORS_ORIGIN`** 为前端域名。仓库内 `web/public/_redirects` 已为 SPA 准备 **`/* → /index.html`**（Cloudflare Pages 兼容）。
+
+说明：界面中关于「1–10 级约对应 60–105 dB」的表述来自实验方案说明；浏览器播放未做声学标定，**分析时建议以等级与时长为主**，线下实验室若需严格 dB 需另行校准设备与程序。
 
 ## 自动化：推送代码 + 云端自动部署
 
