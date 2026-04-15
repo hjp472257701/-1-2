@@ -1,4 +1,5 @@
 const path = require('path')
+require('dotenv').config({ path: path.join(__dirname, '.env') })
 const fs = require('fs')
 const express = require('express')
 const cors = require('cors')
@@ -7,9 +8,28 @@ const { customAlphabet } = require('nanoid')
 const { stringify } = require('csv-stringify/sync')
 
 const { db } = require('./db')
+const { questionnaireSchema, getAllScaleItems } = require('./questionnaireSchema')
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 12)
 const inviteNanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 18)
+const questionnaireNanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 12)
+const CRTT_TOTAL_TRIALS = 25
+const CRTT_BASELINE_TRIALS = 5
+const Q1_REQUIRED_ITEM_COUNT = getAllScaleItems().length
+const Q1_MAX_MISSING_RECOMMENDED = Math.floor(Q1_REQUIRED_ITEM_COUNT * 0.2)
+const Q1_MIN_DURATION_MS_RECOMMENDED = 3 * 60 * 1000
+const Q1_ITEM_INDEX = new Map(
+  getAllScaleItems().map((item) => [
+    item.id,
+    {
+      id: item.id,
+      scaleId: item.scaleId,
+      reverse: item.reverse,
+      min: questionnaireSchema.scales.find((s) => s.id === item.scaleId)?.min ?? 1,
+      max: questionnaireSchema.scales.find((s) => s.id === item.scaleId)?.max ?? 5,
+    },
+  ])
+)
 
 function readExportToken(req) {
   const auth = String(req.get('authorization') || '')
@@ -52,6 +72,7 @@ app.use(
     credentials: false,
   })
 )
+syncQuestionnaireItems()
 
 function nowIso() {
   return new Date().toISOString()
@@ -63,64 +84,118 @@ function clampInt(n, min, max) {
   return Math.min(max, Math.max(min, x))
 }
 
-function generateCrttPlan({ trials = 25 } = {}) {
-  // Roughly 50% losses, with a first loss early to create a clear DV1 window.
-  // We keep it deterministic per session by storing the plan in the client state;
-  // server doesn't need it for scoring, but we include it so the UI can render.
+function scoreReverse(value, min, max) {
+  return min + max - value
+}
+
+function mean(values) {
+  if (!values.length) return null
+  return values.reduce((a, b) => a + b, 0) / values.length
+}
+
+function sum(values) {
+  if (!values.length) return null
+  return values.reduce((a, b) => a + b, 0)
+}
+
+function aggregate(values, method) {
+  return method === 'sum' ? sum(values) : mean(values)
+}
+
+function evaluateQuestionnaireQuality(row) {
+  const attentionFailed = Number(row.attention_passed ?? 1) !== 1
+  const tooManyMissing = Number(row.missing_count ?? 0) > Q1_MAX_MISSING_RECOMMENDED
+  const tooFast = Number(row.duration_ms ?? 0) > 0 && Number(row.duration_ms) < Q1_MIN_DURATION_MS_RECOMMENDED
+  const socialFlag = Number(row.soft_social_flag ?? 0) === 1
+  const conflictFlag = Number(row.soft_conflict_flag ?? 0) === 1
+
+  if (attentionFailed || tooManyMissing || tooFast) {
+    return { response_quality_level: 'exclude', exclude_recommended: 1 }
+  }
+  if (socialFlag || conflictFlag) {
+    return { response_quality_level: 'suspicious', exclude_recommended: 1 }
+  }
+  return { response_quality_level: 'valid', exclude_recommended: 0 }
+}
+
+function scoreQuestionnaire(answersByItem) {
+  const out = {}
+  for (const scale of questionnaireSchema.scales) {
+    const values = []
+    const normalized = new Map()
+    for (const item of scale.items) {
+      const raw = answersByItem.get(item.id)
+      if (typeof raw !== 'number') continue
+      const v = scale.reverseItems.includes(item.id)
+        ? scoreReverse(raw, scale.min, scale.max)
+        : raw
+      values.push(v)
+      normalized.set(item.id, v)
+    }
+    out[scale.id] = aggregate(values, scale.scoring?.method || 'mean')
+
+    if (scale.id === 'AQ' && scale.scoring?.subscales) {
+      for (const [subName, ids] of Object.entries(scale.scoring.subscales)) {
+        const subValues = ids
+          .map((id) => normalized.get(id))
+          .filter((v) => typeof v === 'number')
+        out[`AQ_${subName}`] = aggregate(subValues, scale.scoring?.method || 'mean')
+      }
+    }
+  }
+  return out
+}
+
+function syncQuestionnaireItems() {
+  const upsert = db.prepare(`
+    insert into questionnaire_items (item_id, scale_id, item_text, reverse_scored)
+    values (?, ?, ?, ?)
+    on conflict(item_id) do update set
+      scale_id = excluded.scale_id,
+      item_text = excluded.item_text,
+      reverse_scored = excluded.reverse_scored
+  `)
+  const tx = db.transaction(() => {
+    for (const scale of questionnaireSchema.scales) {
+      for (const item of scale.items) {
+        upsert.run(item.id, scale.id, item.text, scale.reverseItems.includes(item.id) ? 1 : 0)
+      }
+    }
+  })
+  tx()
+}
+
+function shuffle(arr) {
+  const a = arr.slice()
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+
+function generateCrttPlan({ trials = CRTT_TOTAL_TRIALS } = {}) {
+  // Block design to reduce confound:
+  // - Baseline block: fixed early trials with no provocation (all wins)
+  // - Provocation block: ~50% losses, but loss intensities are randomized (non-monotonic)
   const outcomes = Array.from({ length: trials }, () => 'win')
-  const lossCount = Math.floor(trials * 0.52) // 13 of 25
+  const baselineEnd = Math.min(CRTT_BASELINE_TRIALS, trials)
+  const provocationIndices = Array.from({ length: Math.max(0, trials - baselineEnd) }, (_, k) => baselineEnd + k)
 
-  // Ensure first loss at trial 3 (index 2). Then sample remaining loss trials with a hard
-  // constraint: no 3 consecutive losses anywhere (better UX, still ~50% losses).
-  const lossIdx = new Set([2])
+  const lossCount = Math.floor(provocationIndices.length * 0.5)
+  const chosenLosses = shuffle(provocationIndices).slice(0, lossCount)
+  for (const i of chosenLosses) outcomes[i] = 'loss'
 
-  function wouldCreateThreeConsecutive(idx) {
-    const has = (i) => lossIdx.has(i) || i === idx
-    for (let start = idx - 2; start <= idx; start++) {
-      if (start < 0 || start + 2 >= trials) continue
-      if (has(start) && has(start + 1) && has(start + 2)) return true
-    }
-    return false
-  }
+  const lossTrials = outcomes.map((o, i) => (o === 'loss' ? i : null)).filter((x) => x !== null)
 
-  let guard = 0
-  while (lossIdx.size < lossCount && guard < 20_000) {
-    guard += 1
-    // Bias picks slightly toward later trials so escalation "feels" natural.
-    const idx = Math.min(trials - 1, Math.floor(Math.random() ** 0.65 * trials))
-    if (idx < 2) continue
-    if (idx === 2) continue
-    if (lossIdx.has(idx)) continue
-    if (wouldCreateThreeConsecutive(idx)) continue
-    lossIdx.add(idx)
-  }
-
-  // Fallback: fill any remaining slots deterministically without breaking constraints.
-  if (lossIdx.size < lossCount) {
-    for (let i = 0; i < trials && lossIdx.size < lossCount; i++) {
-      if (i < 2) continue
-      if (i === 2) continue
-      if (lossIdx.has(i)) continue
-      if (wouldCreateThreeConsecutive(i)) continue
-      lossIdx.add(i)
-    }
-  }
-
-  for (const i of lossIdx) outcomes[i] = 'loss'
-
-  // Opponent punishment escalates across loss trials from 2..9.
-  const lossTrials = outcomes
-    .map((o, i) => (o === 'loss' ? i : null))
-    .filter((x) => x !== null)
-  const opponentIntensities = lossTrials.map((_, k) => {
-    const t = lossTrials.length <= 1 ? 0 : k / (lossTrials.length - 1)
-    return clampInt(Math.round(2 + t * (9 - 2)), 1, 10)
-  })
-
-  const opponentDurationsMs = lossTrials.map((_, k) => {
-    const t = lossTrials.length <= 1 ? 0 : k / (lossTrials.length - 1)
-    return clampInt(Math.round((500 + t * (3500 - 500)) / 100) * 100, 0, 5000)
-  })
+  // Randomized provocation profiles (not tied to trial order).
+  const intensityPool = [2, 3, 4, 5, 6, 7, 8, 9]
+  const durationPool = [500, 1000, 1500, 2000, 2500, 3000, 3500, 4000]
+  const opponentProfiles = lossTrials.map((_, k) => ({
+    intensity: intensityPool[k % intensityPool.length],
+    durationMs: durationPool[k % durationPool.length],
+  }))
+  const randomizedProfiles = shuffle(opponentProfiles)
 
   const plan = outcomes.map((outcome, i) => {
     const lossK = lossTrials.indexOf(i)
@@ -129,8 +204,8 @@ function generateCrttPlan({ trials = 25 } = {}) {
       outcome,
       opponent: outcome === 'loss'
         ? {
-            intensity: opponentIntensities[lossK],
-            durationMs: opponentDurationsMs[lossK],
+            intensity: clampInt(randomizedProfiles[lossK].intensity, 1, 10),
+            durationMs: clampInt(randomizedProfiles[lossK].durationMs, 0, 5000),
           }
         : null,
     }
@@ -143,6 +218,327 @@ function healthHandler(_req, res) {
 }
 app.get('/api/health', healthHandler)
 app.get('/api/health/', healthHandler)
+
+app.get('/api/q1/schema', (_req, res) => {
+  res.json({
+    ok: true,
+    schema: questionnaireSchema,
+    requiredItemCount: Q1_REQUIRED_ITEM_COUNT,
+  })
+})
+
+app.post('/api/q1/session/start', (req, res) => {
+  const schema = z.object({
+    participantId: z.string().min(1).max(64),
+    userAgent: z.string().max(512).optional(),
+  })
+  const parsed = schema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
+
+  const participantId = parsed.data.participantId.trim()
+  const questionnaireSessionId = questionnaireNanoid()
+  const upsertParticipant = db.prepare(`
+    insert into participants (participant_id, md, cr)
+    values (?, null, null)
+    on conflict(participant_id) do nothing
+  `)
+  const completedCount = db
+    .prepare(
+      `select count(1) as c from questionnaire_sessions where participant_id = ? and completed_at is not null`
+    )
+    .get(participantId)?.c
+  const completedOnce = completedCount > 0 ? 0 : 1
+
+  db.transaction(() => {
+    upsertParticipant.run(participantId)
+    db.prepare(
+      `insert into questionnaire_sessions
+      (questionnaire_session_id, participant_id, schema_version, user_agent, completed_once)
+      values (?, ?, ?, ?, ?)`
+    ).run(
+      questionnaireSessionId,
+      participantId,
+      questionnaireSchema.version,
+      parsed.data.userAgent ?? null,
+      completedOnce
+    )
+  })()
+
+  res.json({ ok: true, questionnaireSessionId, schemaVersion: questionnaireSchema.version })
+})
+
+app.post('/api/q1/answers', (req, res) => {
+  const schema = z.object({
+    questionnaireSessionId: z.string().min(6).max(32),
+    participantId: z.string().min(1).max(64),
+    answers: z
+      .array(
+        z.object({
+          itemId: z.string().min(2).max(32),
+          value: z.number().finite(),
+        })
+      )
+      .min(1),
+  })
+  const parsed = schema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
+
+  const { questionnaireSessionId, participantId, answers } = parsed.data
+  const session = db
+    .prepare(
+      `select questionnaire_session_id, participant_id, completed_at from questionnaire_sessions where questionnaire_session_id = ?`
+    )
+    .get(questionnaireSessionId)
+  if (!session) return res.status(404).json({ error: 'questionnaire_session_not_found' })
+  if (session.participant_id !== participantId) return res.status(403).json({ error: 'participant_mismatch' })
+  if (session.completed_at) return res.status(409).json({ error: 'questionnaire_already_completed' })
+
+  const upsertAnswer = db.prepare(`
+    insert into questionnaire_answers
+    (questionnaire_session_id, participant_id, scale_id, item_id, answer_value)
+    values (?, ?, ?, ?, ?)
+    on conflict(questionnaire_session_id, item_id) do update set
+      answer_value = excluded.answer_value,
+      scale_id = excluded.scale_id
+  `)
+
+  try {
+    db.transaction(() => {
+      for (const answer of answers) {
+        const item = Q1_ITEM_INDEX.get(answer.itemId)
+        if (!item) {
+          const err = new Error('invalid_item')
+          err.code = 'invalid_item'
+          throw err
+        }
+        if (answer.value < item.min || answer.value > item.max) {
+          const err = new Error('invalid_value_range')
+          err.code = 'invalid_value_range'
+          throw err
+        }
+        upsertAnswer.run(
+          questionnaireSessionId,
+          participantId,
+          item.scaleId,
+          item.id,
+          answer.value
+        )
+      }
+    })()
+  } catch (e) {
+    if (e.code === 'invalid_item' || e.code === 'invalid_value_range') {
+      return res.status(400).json({ error: e.code })
+    }
+    throw e
+  }
+
+  res.json({ ok: true, saved: answers.length })
+})
+
+app.post('/api/q1/complete', (req, res) => {
+  const demographicSchema = z.object({
+    gender: z.string().max(24).optional().nullable(),
+    age: z.number().int().min(16).max(80).optional().nullable(),
+    grade: z.string().max(24).optional().nullable(),
+    major: z.string().max(80).optional().nullable(),
+    income: z.string().max(24).optional().nullable(),
+    only_child: z.string().max(12).optional().nullable(),
+    student_cadre: z.string().max(12).optional().nullable(),
+    scholarship: z.string().max(12).optional().nullable(),
+  })
+  const schema = z.object({
+    questionnaireSessionId: z.string().min(6).max(32),
+    participantId: z.string().min(1).max(64),
+    demographics: demographicSchema.optional(),
+  })
+  const parsed = schema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
+
+  const { questionnaireSessionId, participantId } = parsed.data
+  const session = db
+    .prepare(
+      `select questionnaire_session_id, participant_id, started_at, completed_at from questionnaire_sessions where questionnaire_session_id = ?`
+    )
+    .get(questionnaireSessionId)
+  if (!session) return res.status(404).json({ error: 'questionnaire_session_not_found' })
+  if (session.participant_id !== participantId) return res.status(403).json({ error: 'participant_mismatch' })
+  if (session.completed_at) return res.status(409).json({ error: 'questionnaire_already_completed' })
+
+  const answerRows = db
+    .prepare(
+      `select item_id, answer_value from questionnaire_answers where questionnaire_session_id = ?`
+    )
+    .all(questionnaireSessionId)
+  const answersByItem = new Map(answerRows.map((r) => [r.item_id, r.answer_value]))
+  const scores = scoreQuestionnaire(answersByItem)
+  const missingCount = Math.max(0, Q1_REQUIRED_ITEM_COUNT - answerRows.length)
+  const attentionChecks = questionnaireSchema.attentionChecks || []
+  const attentionTotal = attentionChecks.length
+  const attentionCorrect = attentionChecks.filter((c) => answersByItem.get(c.itemId) === c.expectedValue).length
+  const attentionPassed = attentionTotal > 0 ? (attentionCorrect === attentionTotal ? 1 : 0) : 1
+  const socialChecks = questionnaireSchema.softChecks?.socialDesirability || []
+  const socialFlag =
+    socialChecks.some((c) => Number(answersByItem.get(c.itemId) ?? 0) >= Number(c.highThreshold ?? 999)) ? 1 : 0
+  const contradictoryPairs = questionnaireSchema.softChecks?.contradictoryPairs || []
+  const conflictFlag = contradictoryPairs.some((c) => {
+    const a = Number(answersByItem.get(c.positiveItemId) ?? 0)
+    const b = Number(answersByItem.get(c.negativeItemId) ?? 0)
+    const t = Number(c.highThreshold ?? 999)
+    return a >= t && b >= t
+  })
+    ? 1
+    : 0
+  const durationMs = Math.max(
+    0,
+    Math.round(Date.now() - new Date(session.started_at).getTime())
+  )
+  const quality = evaluateQuestionnaireQuality({
+    attention_passed: attentionPassed,
+    missing_count: missingCount,
+    duration_ms: durationMs,
+    soft_social_flag: socialFlag,
+    soft_conflict_flag: conflictFlag,
+  })
+
+  db.transaction(() => {
+    db.prepare(
+      `update questionnaire_sessions set
+        completed_at = ?,
+        duration_ms = ?,
+        missing_count = ?,
+        prds = ?,
+        pmd = ?,
+        aq = ?,
+        aq_physical = ?,
+        aq_verbal = ?,
+        aq_anger = ?,
+        aq_hostility = ?,
+        erq_cr = ?,
+        answer_count = ?,
+        attention_correct = ?,
+        attention_total = ?,
+        attention_passed = ?,
+        soft_social_flag = ?,
+        soft_conflict_flag = ?,
+        response_quality_level = ?,
+        exclude_recommended = ?
+      where questionnaire_session_id = ?`
+    ).run(
+      nowIso(),
+      durationMs,
+      missingCount,
+      scores.PRDS ?? null,
+      scores.PMD ?? null,
+      scores.AQ ?? null,
+      scores.AQ_physical ?? null,
+      scores.AQ_verbal ?? null,
+      scores.AQ_anger ?? null,
+      scores.AQ_hostility ?? null,
+      scores.ERQ_CR ?? null,
+      answerRows.length,
+      attentionCorrect,
+      attentionTotal,
+      attentionPassed,
+      socialFlag,
+      conflictFlag,
+      quality.response_quality_level,
+      quality.exclude_recommended,
+      questionnaireSessionId
+    )
+
+    if (parsed.data.demographics) {
+      const d = parsed.data.demographics
+      db.prepare(
+        `insert into participant_demographics
+        (participant_id, gender, age, grade, major, income, only_child, student_cadre, scholarship, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(participant_id) do update set
+          gender = excluded.gender,
+          age = excluded.age,
+          grade = excluded.grade,
+          major = excluded.major,
+          income = excluded.income,
+          only_child = excluded.only_child,
+          student_cadre = excluded.student_cadre,
+          scholarship = excluded.scholarship,
+          updated_at = excluded.updated_at`
+      ).run(
+        participantId,
+        d.gender ?? null,
+        d.age ?? null,
+        d.grade ?? null,
+        d.major ?? null,
+        d.income ?? null,
+        d.only_child ?? null,
+        d.student_cadre ?? null,
+        d.scholarship ?? null,
+        nowIso()
+      )
+    }
+
+    db.prepare(
+      `insert into participant_scales_snapshot
+      (participant_id, questionnaire_session_id, prds, pmd, aq, aq_physical, aq_verbal, aq_anger, aq_hostility, erq_cr, item_count, updated_at)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(participant_id) do update set
+        questionnaire_session_id = excluded.questionnaire_session_id,
+        prds = excluded.prds,
+        pmd = excluded.pmd,
+        aq = excluded.aq,
+        aq_physical = excluded.aq_physical,
+        aq_verbal = excluded.aq_verbal,
+        aq_anger = excluded.aq_anger,
+        aq_hostility = excluded.aq_hostility,
+        erq_cr = excluded.erq_cr,
+        item_count = excluded.item_count,
+        updated_at = excluded.updated_at`
+    ).run(
+      participantId,
+      questionnaireSessionId,
+      scores.PRDS ?? null,
+      scores.PMD ?? null,
+      scores.AQ ?? null,
+      scores.AQ_physical ?? null,
+      scores.AQ_verbal ?? null,
+      scores.AQ_anger ?? null,
+      scores.AQ_hostility ?? null,
+      scores.ERQ_CR ?? null,
+      answerRows.length,
+      nowIso()
+    )
+
+    db.prepare(
+      `insert into participants (participant_id, md, cr)
+      values (?, ?, ?)
+      on conflict(participant_id) do update set
+        md = coalesce(excluded.md, participants.md),
+        cr = coalesce(excluded.cr, participants.cr)`
+    ).run(participantId, scores.PMD ?? null, scores.ERQ_CR ?? null)
+  })()
+
+  res.json({
+    ok: true,
+    questionnaireSessionId,
+    missingCount,
+    answerCount: answerRows.length,
+    attention: {
+      correct: attentionCorrect,
+      total: attentionTotal,
+      passed: Boolean(attentionPassed),
+    },
+    quality,
+    scores: {
+      prds: scores.PRDS ?? null,
+      pmd: scores.PMD ?? null,
+      aq: scores.AQ ?? null,
+      aq_physical: scores.AQ_physical ?? null,
+      aq_verbal: scores.AQ_verbal ?? null,
+      aq_anger: scores.AQ_anger ?? null,
+      aq_hostility: scores.AQ_hostility ?? null,
+      erq_cr: scores.ERQ_CR ?? null,
+    },
+  })
+})
 
 app.get('/api/invite/:token', (req, res) => {
   const token = String(req.params.token || '').trim()
@@ -259,11 +655,16 @@ app.get('/admin', (_req, res) => {
         </label>
         <div class="row">
           <button id="save">保存口令</button>
-          <a id="download" class="btn" href="#"><button type="button">下载 CSV</button></a>
+          <a id="downloadQ2" class="btn" href="#"><button type="button">下载研究二 CSV</button></a>
+          <a id="downloadQ1" class="btn" href="#"><button type="button">下载研究一 CSV</button></a>
+          <a id="downloadMerged" class="btn" href="#"><button type="button">下载合并 CSV</button></a>
           <button id="clear" type="button">清除本地口令</button>
         </div>
         <div id="err" class="err" style="display:none"></div>
-        <p style="margin-top:12px" class="hint">导出接口：/api/export.csv?token=EXPORT_TOKEN</p>
+        <p style="margin-top:12px" class="hint">研究二被试级导出：/api/export.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究一问卷导出：/api/export_research1.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究一+研究二合并导出：/api/export_merged.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">trial 级导出：/api/export_trials.csv?token=EXPORT_TOKEN</p>
       </div>
       <div class="card">
         <h1>生成被试邀请链接</h1>
@@ -302,7 +703,9 @@ app.get('/admin', (_req, res) => {
     <script>
       const key = 'crtt_export_token'
       const $token = document.getElementById('token')
-      const $download = document.getElementById('download')
+      const $downloadQ2 = document.getElementById('downloadQ2')
+      const $downloadQ1 = document.getElementById('downloadQ1')
+      const $downloadMerged = document.getElementById('downloadMerged')
       const $err = document.getElementById('err')
       function setErr(msg) {
         if (!msg) { $err.style.display='none'; $err.textContent=''; return }
@@ -310,7 +713,9 @@ app.get('/admin', (_req, res) => {
       }
       function refresh() {
         const t = ($token.value || '').trim()
-        $download.href = '/api/export.csv?token=' + encodeURIComponent(t)
+        $downloadQ2.href = '/api/export.csv?token=' + encodeURIComponent(t)
+        $downloadQ1.href = '/api/export_research1.csv?token=' + encodeURIComponent(t)
+        $downloadMerged.href = '/api/export_merged.csv?token=' + encodeURIComponent(t)
       }
       $token.value = (localStorage.getItem(key) || '')
       refresh()
@@ -326,21 +731,25 @@ app.get('/admin', (_req, res) => {
         setErr('')
         refresh()
       })
-      $download.addEventListener('click', async (e) => {
-        setErr('')
-        const url = $download.href
-        // Preflight check to give nicer error than downloading HTML "unauthorized".
-        try {
-          const r = await fetch(url, { method: 'GET' })
-          if (!r.ok) {
+      function bindDownloadPreflight($node) {
+        $node.addEventListener('click', async (e) => {
+          setErr('')
+          const url = $node.href
+          try {
+            const r = await fetch(url, { method: 'GET' })
+            if (!r.ok) {
+              e.preventDefault()
+              setErr('导出失败：口令错误或未设置（HTTP ' + r.status + '）。')
+            }
+          } catch (err) {
             e.preventDefault()
-            setErr('导出失败：口令错误或未设置（HTTP ' + r.status + '）。')
+            setErr('导出失败：网络错误。')
           }
-        } catch (err) {
-          e.preventDefault()
-          setErr('导出失败：网络错误。')
-        }
-      })
+        })
+      }
+      bindDownloadPreflight($downloadQ2)
+      bindDownloadPreflight($downloadQ1)
+      bindDownloadPreflight($downloadMerged)
 
       const webKey = 'crtt_public_web_url'
       const $webBase = document.getElementById('webBase')
@@ -479,7 +888,7 @@ app.post('/api/session/start', (req, res) => {
     throw e
   }
 
-  const plan = generateCrttPlan({ trials: 25 })
+  const plan = generateCrttPlan({ trials: CRTT_TOTAL_TRIALS })
   res.json({ sessionId, plan })
 })
 
@@ -540,7 +949,7 @@ app.post('/api/session/hook', (req, res) => {
 app.post('/api/trial', (req, res) => {
   const schema = z.object({
     sessionId: z.string().min(6).max(32),
-    trialIndex: z.number().int().min(0).max(24),
+    trialIndex: z.number().int().min(0).max(CRTT_TOTAL_TRIALS - 1),
     outcome: z.enum(['win', 'loss']),
     participantRtMs: z.number().int().min(50).max(10000).nullable().optional(),
     participantIntensity: z.number().int().min(1).max(10),
@@ -593,19 +1002,77 @@ app.post('/api/session/complete', (req, res) => {
 })
 
 function computeDv(trials) {
-  const firstLossIndex = trials.findIndex((t) => t.outcome === 'loss')
-  const pre = firstLossIndex === -1 ? trials : trials.slice(0, firstLossIndex)
-  const post = firstLossIndex === -1 ? [] : trials.slice(firstLossIndex + 1)
-
   const score = (t) => t.participant_intensity * (t.participant_duration_ms / 1000)
   const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + score(b), 0) / arr.length : null)
 
+  const dv1Trials = trials.filter((t) => t.trial_index >= 0 && t.trial_index < CRTT_BASELINE_TRIALS)
+  const dv2Trials = trials.filter((t) => t.trial_index >= CRTT_BASELINE_TRIALS)
+
   return {
-    firstLossIndex: firstLossIndex === -1 ? null : firstLossIndex,
-    dv1_unprovoked: mean(pre),
-    dv2_provoked: mean(post),
+    dv1_trial_start: 1,
+    dv1_trial_end: CRTT_BASELINE_TRIALS,
+    dv1_n: dv1Trials.length,
+    dv1_unprovoked: mean(dv1Trials),
+    dv2_trial_start: CRTT_BASELINE_TRIALS + 1,
+    dv2_trial_end: CRTT_TOTAL_TRIALS,
+    dv2_n: dv2Trials.length,
+    dv2_provoked: mean(dv2Trials),
   }
 }
+
+app.get('/api/export_research1.csv', (req, res) => {
+  const token = req.query.token
+  if (!process.env.EXPORT_TOKEN || token !== process.env.EXPORT_TOKEN) {
+    return res.status(401).send('unauthorized')
+  }
+
+  const rows = db
+    .prepare(
+      `select
+        qs.questionnaire_session_id,
+        qs.participant_id,
+        qs.schema_version,
+        qs.started_at,
+        qs.completed_at,
+        qs.duration_ms,
+        qs.answer_count,
+        qs.missing_count,
+        qs.attention_correct,
+        qs.attention_total,
+        qs.attention_passed,
+        qs.soft_social_flag,
+        qs.soft_conflict_flag,
+        qs.response_quality_level,
+        qs.exclude_recommended,
+        qs.completed_once,
+        qs.prds,
+        qs.pmd,
+        qs.aq,
+        qs.aq_physical,
+        qs.aq_verbal,
+        qs.aq_anger,
+        qs.aq_hostility,
+        qs.erq_cr,
+        d.gender,
+        d.age,
+        d.grade,
+        d.major,
+        d.income,
+        d.only_child,
+        d.student_cadre,
+        d.scholarship
+      from questionnaire_sessions qs
+      left join participant_demographics d on d.participant_id = qs.participant_id
+      where qs.completed_at is not null
+      order by qs.started_at asc`
+    )
+    .all()
+    .map((r) => ({ ...r, ...evaluateQuestionnaireQuality(r) }))
+
+  const csv = stringify(rows, { header: true })
+  res.setHeader('content-type', 'text/csv; charset=utf-8')
+  res.send(csv)
+})
 
 app.get('/api/export.csv', (req, res) => {
   const token = req.query.token
@@ -638,11 +1105,161 @@ app.get('/api/export.csv', (req, res) => {
       anger_rating: s.anger_rating,
       md: s.md,
       cr: s.cr,
-      first_loss_index: dv.firstLossIndex,
+      dv1_trial_start: dv.dv1_trial_start,
+      dv1_trial_end: dv.dv1_trial_end,
+      dv1_n: dv.dv1_n,
       dv1_unprovoked: dv.dv1_unprovoked,
+      dv2_trial_start: dv.dv2_trial_start,
+      dv2_trial_end: dv.dv2_trial_end,
+      dv2_n: dv.dv2_n,
       dv2_provoked: dv.dv2_provoked,
       trials_json: JSON.stringify(trials),
     })
+  }
+
+  const csv = stringify(rows, { header: true })
+  res.setHeader('content-type', 'text/csv; charset=utf-8')
+  res.send(csv)
+})
+
+app.get('/api/export_merged.csv', (req, res) => {
+  const token = req.query.token
+  if (!process.env.EXPORT_TOKEN || token !== process.env.EXPORT_TOKEN) {
+    return res.status(401).send('unauthorized')
+  }
+
+  const rows = db
+    .prepare(
+      `select
+        qs.participant_id,
+        qs.questionnaire_session_id,
+        qs.completed_at as q1_completed_at,
+        qs.prds,
+        qs.pmd,
+        qs.aq,
+        qs.aq_physical,
+        qs.aq_verbal,
+        qs.aq_anger,
+        qs.aq_hostility,
+        qs.erq_cr,
+        qs.duration_ms as q1_duration_ms,
+        qs.missing_count as q1_missing_count,
+        qs.answer_count as q1_answer_count,
+        qs.attention_correct as q1_attention_correct,
+        qs.attention_total as q1_attention_total,
+        qs.attention_passed as q1_attention_passed,
+        qs.soft_social_flag as q1_soft_social_flag,
+        qs.soft_conflict_flag as q1_soft_conflict_flag,
+        qs.response_quality_level as q1_response_quality_level,
+        qs.exclude_recommended as q1_exclude_recommended,
+        d.gender,
+        d.age,
+        d.grade,
+        d.major,
+        d.income,
+        d.only_child,
+        d.student_cadre,
+        d.scholarship,
+        s.session_id as q2_session_id,
+        s.started_at as q2_started_at,
+        s.completed_at as q2_completed_at,
+        s.anger_rating,
+        s.invite_token,
+        p.md as md_for_q2,
+        p.cr as cr_for_q2
+      from questionnaire_sessions qs
+      left join participant_demographics d on d.participant_id = qs.participant_id
+      left join sessions s on s.participant_id = qs.participant_id
+      left join participants p on p.participant_id = qs.participant_id
+      where qs.completed_at is not null
+      order by qs.started_at asc, s.started_at asc`
+    )
+    .all()
+    .map((r) => ({
+      ...r,
+      ...evaluateQuestionnaireQuality({
+        attention_passed: r.q1_attention_passed,
+        missing_count: r.q1_missing_count,
+        duration_ms: r.q1_duration_ms,
+        soft_social_flag: r.q1_soft_social_flag,
+        soft_conflict_flag: r.q1_soft_conflict_flag,
+      }),
+    }))
+
+  const trialStmt = db.prepare(
+    `select * from trials where session_id = ? order by trial_index asc`
+  )
+  const enriched = rows.map((r) => {
+    if (!r.q2_session_id) {
+      return {
+        ...r,
+        dv1_n: null,
+        dv1_unprovoked: null,
+        dv2_n: null,
+        dv2_provoked: null,
+      }
+    }
+    const dv = computeDv(trialStmt.all(r.q2_session_id))
+    return {
+      ...r,
+      dv1_n: dv.dv1_n,
+      dv1_unprovoked: dv.dv1_unprovoked,
+      dv2_n: dv.dv2_n,
+      dv2_provoked: dv.dv2_provoked,
+    }
+  })
+
+  const csv = stringify(enriched, { header: true })
+  res.setHeader('content-type', 'text/csv; charset=utf-8')
+  res.send(csv)
+})
+
+app.get('/api/export_trials.csv', (req, res) => {
+  const token = req.query.token
+  if (!process.env.EXPORT_TOKEN || token !== process.env.EXPORT_TOKEN) {
+    return res.status(401).send('unauthorized')
+  }
+
+  const sessions = db
+    .prepare(
+      `select s.*, p.md as md, p.cr as cr
+       from sessions s join participants p on p.participant_id = s.participant_id
+       order by s.started_at asc`
+    )
+    .all()
+
+  const trialStmt = db.prepare(
+    `select * from trials where session_id = ? order by trial_index asc`
+  )
+
+  const rows = []
+  for (const s of sessions) {
+    const trials = trialStmt.all(s.session_id)
+    for (const t of trials) {
+      const participantPunishment = t.participant_intensity * (t.participant_duration_ms / 1000)
+      rows.push({
+        participant_id: s.participant_id,
+        session_id: s.session_id,
+        invite_token: s.invite_token ?? null,
+        started_at: s.started_at,
+        completed_at: s.completed_at,
+        anger_rating: s.anger_rating,
+        md: s.md,
+        cr: s.cr,
+        trial_index: t.trial_index,
+        outcome: t.outcome,
+        participant_rt_ms: t.participant_rt_ms,
+        participant_intensity: t.participant_intensity,
+        participant_duration_ms: t.participant_duration_ms,
+        participant_punishment: participantPunishment,
+        opponent_intensity: t.opponent_intensity,
+        opponent_duration_ms: t.opponent_duration_ms,
+        trial_number: t.trial_index + 1,
+        is_baseline_phase: t.trial_index < CRTT_BASELINE_TRIALS ? 1 : 0,
+        is_provocation_phase: t.trial_index >= CRTT_BASELINE_TRIALS ? 1 : 0,
+        trial_recorded_at: t.created_at,
+      })
+    }
   }
 
   const csv = stringify(rows, { header: true })

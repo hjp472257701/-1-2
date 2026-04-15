@@ -17,6 +17,7 @@ web/.env
 web/.env.local
 web/.env.*.local
 !web/.env.example
+!server/.env.example
 
 # SQLite database (local / Render disk path is not in repo)
 *.sqlite3

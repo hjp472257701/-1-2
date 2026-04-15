@@ -11,9 +11,17 @@ type CrttPlanItem = {
 type Step = 'login' | 'hook' | 'crtt' | 'done'
 
 type InviteGate = 'none' | 'loading' | 'ok' | 'error'
+type CrttMode = 'practice' | 'formal'
 
 const INTENSITY_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const
 const DURATION_OPTIONS = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5] as const
+const PRACTICE_PLAN: CrttPlanItem[] = [
+  { trialIndex: 0, outcome: 'loss', opponent: { intensity: 4, durationMs: 800 } },
+  { trialIndex: 1, outcome: 'win', opponent: null },
+]
+const PRACTICE_VALID_RT_MIN_MS = 100
+const PRACTICE_VALID_RT_MAX_MS = 3000
+const PRACTICE_MIN_VALID_RT_COUNT = 1
 
 function readInviteTokenFromUrl(): string | null {
   const url = new URL(window.location.href)
@@ -58,12 +66,21 @@ function App() {
   const [hookCanContinue, setHookCanContinue] = useState(false)
 
   const [trialIndex, setTrialIndex] = useState(0)
+  const [crttMode, setCrttMode] = useState<CrttMode>('practice')
   const [intensity, setIntensity] = useState(5)
   const [durationSec, setDurationSec] = useState(2)
-  const [phase, setPhase] = useState<'set' | 'wait' | 'go' | 'feedback'>('set')
+  const [phase, setPhase] = useState<'set' | 'wait' | 'go' | 'feedback' | 'practiceComplete'>(
+    'set'
+  )
   const [goAt, setGoAt] = useState<number | null>(null)
   const [rtMs, setRtMs] = useState<number | null>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
+  const [practiceRtList, setPracticeRtList] = useState<number[]>([])
+  const [practicePassResult, setPracticePassResult] = useState<{
+    passed: boolean
+    validCount: number
+  } | null>(null)
+  const practiceRtListRef = useRef<number[]>([])
 
   const goReactionHandledRef = useRef(false)
   const commitGoReactionRef = useRef<() => void>(() => {})
@@ -137,6 +154,10 @@ function App() {
   }
 
   useEffect(() => {
+    document.title = '研究二 · 实验任务'
+  }, [])
+
+  useEffect(() => {
     const token = readInviteTokenFromUrl()
     if (!token) return
 
@@ -187,6 +208,10 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    practiceRtListRef.current = practiceRtList
+  }, [practiceRtList])
+
   async function startSession() {
     setBusy(true)
     setError(null)
@@ -235,11 +260,15 @@ function App() {
       })
       if (!r.ok) throw new Error(`hook_failed_${r.status}`)
       setStep('crtt')
+      setCrttMode('practice')
       setTrialIndex(0)
       setPhase('set')
       setFeedback(null)
       setGoAt(null)
       setRtMs(null)
+      setPracticeRtList([])
+      practiceRtListRef.current = []
+      setPracticePassResult(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'hook_failed')
     } finally {
@@ -284,9 +313,51 @@ function App() {
     }
   }
 
+  function beginFormalCrtt() {
+    setCrttMode('formal')
+    setTrialIndex(0)
+    setIntensity(5)
+    setDurationSec(2)
+    setPhase('set')
+    setFeedback(null)
+    setGoAt(null)
+    setRtMs(null)
+  }
+
+  function restartPractice() {
+    setCrttMode('practice')
+    setTrialIndex(0)
+    setIntensity(5)
+    setDurationSec(2)
+    setPhase('set')
+    setFeedback(null)
+    setGoAt(null)
+    setRtMs(null)
+    setPracticeRtList([])
+    practiceRtListRef.current = []
+    setPracticePassResult(null)
+  }
+
+  function getCurrentPlan() {
+    return crttMode === 'practice' ? PRACTICE_PLAN : plan
+  }
+
   function finishAndAdvance(nextIndex: number) {
-    if (!plan) return
-    if (nextIndex >= plan.length) {
+    const currentPlan = getCurrentPlan()
+    if (!currentPlan) return
+    if (nextIndex >= currentPlan.length) {
+      if (crttMode === 'practice') {
+        const validCount = practiceRtListRef.current.filter(
+          (rt) => rt >= PRACTICE_VALID_RT_MIN_MS && rt <= PRACTICE_VALID_RT_MAX_MS
+        ).length
+        const passed = validCount >= PRACTICE_MIN_VALID_RT_COUNT
+        setPracticePassResult({ passed, validCount })
+        setPhase('practiceComplete')
+        setFeedback(null)
+        setGoAt(null)
+        setRtMs(null)
+        return
+      }
       void completeSession()
       return
     }
@@ -316,40 +387,51 @@ function App() {
   commitGoReactionRef.current = () => {
     if (phase !== 'go' || goAt == null) return
     if (goReactionHandledRef.current) return
-    const item = plan?.[trialIndex] ?? null
+    const currentPlan = getCurrentPlan()
+    const item = currentPlan?.[trialIndex] ?? null
     if (!item) return
     goReactionHandledRef.current = true
 
     const rt = Math.max(0, Math.round(performance.now() - goAt))
     setRtMs(rt)
     setPhase('feedback')
+    if (crttMode === 'practice') {
+      setPracticeRtList((prev) => {
+        const next = [...prev, rt]
+        practiceRtListRef.current = next
+        return next
+      })
+    }
 
     const pDurMs = Math.round(durationSec * 1000)
     const opp = item.opponent
     const oppIntensity = opp ? opp.intensity : null
     const oppDur = opp ? opp.durationMs : null
 
-    const msg =
+    const baseMsg =
       item.outcome === 'loss'
         ? `这轮你慢了一点，算你输。按游戏规则，你要接受一段声音惩罚：白噪音约 ${oppIntensity} 档响度、${Math.round(
             (oppDur ?? 0) / 100
           ) / 10} 秒（游戏伙伴 B 在开始前设好的）。`
         : '这轮你更快，算你赢。这一轮不用接受声音惩罚。'
+    const msg = crttMode === 'practice' ? `[练习轮次，不计入正式数据] ${baseMsg}` : baseMsg
     setFeedback(msg)
 
     if (item.outcome === 'loss' && audioEnabled && oppIntensity != null && oppDur != null) {
       playWhiteNoise({ gain: intensityToGain(oppIntensity), durationMs: oppDur })
     }
 
-    void submitTrial({
-      trialIndex,
-      outcome: item.outcome,
-      participantRtMs: rt,
-      participantIntensity: intensity,
-      participantDurationMs: pDurMs,
-      opponentIntensity: oppIntensity,
-      opponentDurationMs: oppDur,
-    }).catch((e) => setError(e instanceof Error ? e.message : 'trial_failed'))
+    if (crttMode === 'formal') {
+      void submitTrial({
+        trialIndex,
+        outcome: item.outcome,
+        participantRtMs: rt,
+        participantIntensity: intensity,
+        participantDurationMs: pDurMs,
+        opponentIntensity: oppIntensity,
+        opponentDurationMs: oppDur,
+      }).catch((e) => setError(e instanceof Error ? e.message : 'trial_failed'))
+    }
 
     window.setTimeout(() => finishAndAdvance(trialIndex + 1), 1200)
   }
@@ -368,7 +450,7 @@ function App() {
   return (
     <div className="page">
       <header className="topbar">
-        <div className="brand">在线实验任务</div>
+        <div className="brand">研究二 · 实验任务</div>
         <div className="meta" />
       </header>
 
@@ -379,9 +461,11 @@ function App() {
           <>
             <h1>欢迎参与</h1>
             <p className="muted notice">
-              <strong>你需要准备：</strong>一台能出声的手机、平板或电脑；用 <strong>Chrome</strong>、<strong>Safari（iPhone）</strong> 或 <strong>Edge</strong> 打开本页。若用电脑，任务二中可用<strong>空格键</strong>反应；手机和平板请用屏幕上出现的<strong>大按钮</strong>反应。
+              <strong>研究说明：</strong>本页为<strong>研究二（实验任务）</strong>。若你尚未完成<strong>研究一（问卷调查）</strong>，请先完成问卷，再使用<strong>同一被试编号</strong>进入本页。
               <br />
-              <strong>你要做的：</strong>填好下面的编号 → 勾选同意 → 点一次「启用声音」→ 点「开始」。编号请填<strong>通知或邮件里给你的那个</strong>；若你参加过本课题组别的线上任务，填<strong>当时同一个编号</strong>。若是点链接进来的，<strong>不要改地址栏里的内容</strong>。
+              <strong>你需要准备：</strong>一台能出声的手机、平板或电脑；用 <strong>Chrome</strong>、<strong>Safari（iPhone）</strong> 或 <strong>Edge</strong> 打开本页。若用电脑，反应时环节中可用<strong>空格键</strong>反应；手机和平板请用屏幕上出现的<strong>大按钮</strong>反应。
+              <br />
+              <strong>你要做的：</strong>填好下面的编号 → 勾选同意 → 点一次「启用声音」→ 点「开始」。编号请填<strong>通知或邮件里给你的那个</strong>（须与<strong>研究一问卷所用编号一致</strong>）；若你参加过本课题组别的线上任务，填<strong>当时同一个编号</strong>。若是点链接进来的，<strong>不要改地址栏里的内容</strong>。
             </p>
             {readInviteTokenFromUrl() ? (
               <p className="muted">
@@ -452,7 +536,7 @@ function App() {
 
         {step === 'hook' ? (
           <>
-            <h1>任务一：阅读环节</h1>
+            <h1>环节一：阅读</h1>
             <p className="muted">
               稍后会有一位<strong>游戏伙伴</strong>和你一起完成有奖小任务，下面用 <strong>游戏伙伴 B</strong> 来称呼他/她。
               <strong>现在请你先读下面这段故事</strong>，把它当成你和<strong>游戏伙伴 B</strong> 目前是怎么搭档的。请<strong>至少读满大约 1 分钟</strong>再点下面的按钮（页面会帮你计时）。
@@ -498,10 +582,15 @@ function App() {
 
         {step === 'crtt' ? (
           <>
-            <h1>任务二：电脑反应时环节</h1>
+            <h1>环节二：反应时</h1>
             <p className="muted">
-              这一环节一共 <strong>25 轮</strong>，每轮你和 <strong>游戏伙伴 B</strong> 比<strong>谁按键更快</strong>。
+              这一环节一共 <strong>25 轮</strong>，每轮你和 <strong>游戏伙伴 B</strong> 比<strong>谁反应更快</strong>。
             </p>
+            {crttMode === 'practice' ? (
+              <div className="feedback">
+                现在先进行 <strong>{PRACTICE_PLAN.length} 轮练习</strong>，帮助你熟悉操作。练习数据不会进入正式分析。
+              </div>
+            ) : null}
             <p className="muted">
               <strong>每一轮怎么操作（按顺序）：</strong>
               <br />
@@ -509,7 +598,7 @@ function App() {
               <br />
               ② 点「开始本轮」。
               <br />
-              ③ 等一会儿，屏幕上会出现大大的「<strong>GO</strong>」，<strong>一看到就马上反应</strong>：<strong>电脑按空格键</strong>，<strong>手机或平板点下面的「我按了」按钮</strong>。
+              ③ 等一会儿，屏幕上会出现大大的「<strong>GO</strong>」，<strong>一看到就马上反应</strong>：<strong>电脑可按空格键</strong>；<strong>手机或平板可点「我按了」或点 GO 区域任意位置</strong>。
               <br />
               ④ 谁按得快，谁赢这一轮。<strong>输了的人</strong>要按规则接受对方设好的<strong>声音惩罚</strong>（那段白噪音）；赢了这一轮就不用受罚。
             </p>
@@ -518,9 +607,39 @@ function App() {
             </p>
 
             <div className="statusRow">
-              <div className="pill">第 {trialIndex + 1} 轮，共 {plan?.length ?? 25} 轮</div>
+              <div className="pill">
+                {crttMode === 'practice' ? '练习' : '正式'}第 {trialIndex + 1} 轮，共{' '}
+                {getCurrentPlan()?.length ?? 0} 轮
+              </div>
               {rtMs != null ? <div className="pill">你按键：{rtMs} 毫秒</div> : null}
             </div>
+
+            {phase === 'practiceComplete' ? (
+              <>
+                {practicePassResult?.passed ? (
+                  <>
+                    <div className="feedback">
+                      练习通过（有效反应 {practicePassResult.validCount}/{PRACTICE_PLAN.length} 轮）。你已经熟悉操作，点击下方按钮后将进入正式任务（共{' '}
+                      {plan?.length ?? 25} 轮）。
+                    </div>
+                    <button className="primary" onClick={beginFormalCrtt}>
+                      进入正式任务
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="error">
+                      练习未通过：有效反应仅 {practicePassResult?.validCount ?? 0}/
+                      {PRACTICE_PLAN.length} 轮。有效反应标准为 {PRACTICE_VALID_RT_MIN_MS}-
+                      {PRACTICE_VALID_RT_MAX_MS} 毫秒，请重做练习后再进入正式任务。
+                    </div>
+                    <button className="primary" onClick={restartPractice}>
+                      重新进行练习
+                    </button>
+                  </>
+                )}
+              </>
+            ) : null}
 
             {phase === 'set' ? (
               <>
@@ -567,10 +686,13 @@ function App() {
             ) : null}
 
             {phase === 'go' ? (
-              <div className="bigCenter goStack">
+              <div
+                className="bigCenter goStack goStackInteractive"
+                onPointerDown={() => commitGoReactionRef.current()}
+              >
                 <div className="go">GO</div>
                 <p className="goHint muted">
-                  电脑：按<strong>空格</strong>；手机/平板：点下面按钮。
+                  电脑：按<strong>空格</strong>；手机/平板：点下面按钮或点本区域任意位置。
                 </p>
                 <button
                   type="button"
@@ -590,14 +712,14 @@ function App() {
 
         {step === 'done' ? (
           <>
-            <h1>全部完成</h1>
-            <p className="muted">谢谢你的参与，到这里就结束了，可以把网页关掉。</p>
+            <h1>研究二已完成</h1>
+            <p className="muted">谢谢你的参与，实验任务到这里就结束了，可以把网页关掉。</p>
           </>
         ) : null}
       </main>
 
       <footer className="footer">
-        <span className="muted">在线实验</span>
+        <span className="muted">研究二 · 实验任务</span>
       </footer>
     </div>
   )
