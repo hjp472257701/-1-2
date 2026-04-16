@@ -109,6 +109,19 @@ input[type='range'] {
   width: 100%;
 }
 
+.fieldErrorInput {
+  border-color: rgba(220, 38, 38, 0.7) !important;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12);
+  background: color-mix(in srgb, rgba(220, 38, 38, 0.08) 65%, var(--code-bg));
+}
+
+.fieldErrorBox {
+  border: 1px solid rgba(220, 38, 38, 0.55);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, rgba(220, 38, 38, 0.08) 70%, var(--bg));
+}
+
 .rangeValue {
   font-family: var(--mono);
   color: var(--text-h);
@@ -281,10 +294,14 @@ input[type='range'] {
 
 .feedback {
   margin-top: 12px;
-  padding: 12px;
+  padding: 16px;
   border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--social-bg);
   text-align: left;
   color: var(--text-h);
+  line-height: 1.6;
+  min-height: 88px;
+  display: grid;
+  align-items: center;
 }

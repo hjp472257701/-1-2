@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { apiFetch } from './api'
 
@@ -30,6 +30,75 @@ type QuestionnaireSchema = {
   scales: Scale[]
 }
 
+type PersistedScaleLayout = { scaleId: string; itemIds: string[] }
+type QuestionnaireDraft = {
+  schemaVersion?: string
+  participantId?: string
+  consented?: boolean
+  answers?: Record<string, number>
+  demographics?: Record<string, string | number>
+  scaleLayout?: PersistedScaleLayout[]
+}
+
+const QUESTIONNAIRE_DRAFT_KEY = 'research1-questionnaire-draft'
+
+function readDraft(): QuestionnaireDraft | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(QUESTIONNAIRE_DRAFT_KEY)
+    return raw ? (JSON.parse(raw) as QuestionnaireDraft) : null
+  } catch {
+    return null
+  }
+}
+
+function buildRandomizedScales(schema: QuestionnaireSchema): Scale[] {
+  const base = schema.scales
+    .filter((s) => s.id !== 'ATTN')
+    .map((s) => ({ ...s, items: [...s.items] }))
+  const attentionItems = schema.scales.find((s) => s.id === 'ATTN')?.items ?? []
+  if (!base.length || !attentionItems.length) return base
+
+  for (const item of attentionItems) {
+    const groupIdx = Math.floor(Math.random() * base.length)
+    const target = base[groupIdx]
+    const minPos = Math.min(1, target.items.length)
+    const pos = minPos + Math.floor(Math.random() * Math.max(1, target.items.length - minPos + 1))
+    target.items.splice(Math.min(pos, target.items.length), 0, item)
+  }
+  return base
+}
+
+function restoreScaleLayout(
+  schema: QuestionnaireSchema,
+  savedLayout: PersistedScaleLayout[] | undefined
+): Scale[] | null {
+  if (!savedLayout?.length) return null
+  const baseScales = schema.scales.filter((s) => s.id !== 'ATTN')
+  const itemMap = new Map(
+    schema.scales.flatMap((scale) => scale.items.map((item) => [item.id, item] as const))
+  )
+  const expectedIds = new Set(Array.from(itemMap.keys()))
+  const restored = savedLayout.map((saved) => {
+    const meta = baseScales.find((scale) => scale.id === saved.scaleId)
+    if (!meta) return null
+    const items = saved.itemIds.map((id) => itemMap.get(id)).filter(Boolean) as ScaleItem[]
+    if (items.length !== saved.itemIds.length) return null
+    return { ...meta, items }
+  })
+  if (restored.some((scale) => scale == null)) return null
+
+  const seen = new Set<string>()
+  for (const scale of restored as Scale[]) {
+    for (const item of scale.items) {
+      if (seen.has(item.id)) return null
+      seen.add(item.id)
+    }
+  }
+  if (seen.size !== expectedIds.size) return null
+  return restored as Scale[]
+}
+
 function readPidFromUrl(): string {
   const url = new URL(window.location.href)
   return (
@@ -43,13 +112,18 @@ function readPidFromUrl(): string {
 
 function QuestionnaireApp() {
   const [schema, setSchema] = useState<QuestionnaireSchema | null>(null)
-  const [participantId, setParticipantId] = useState(() => readPidFromUrl())
-  const [consented, setConsented] = useState(false)
-  const [answers, setAnswers] = useState<Record<string, number>>({})
-  const [demographics, setDemographics] = useState<Record<string, string | number>>({})
+  const [participantId, setParticipantId] = useState(() => readDraft()?.participantId ?? readPidFromUrl())
+  const [consented, setConsented] = useState(() => readDraft()?.consented ?? false)
+  const [answers, setAnswers] = useState<Record<string, number>>(() => readDraft()?.answers ?? {})
+  const [demographics, setDemographics] = useState<Record<string, string | number>>(
+    () => readDraft()?.demographics ?? {}
+  )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
+  const [displayScales, setDisplayScales] = useState<Scale[]>([])
+  const [submitAttempted, setSubmitAttempted] = useState(false)
+  const mainRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     document.title = '研究一 · 问卷调查'
@@ -76,25 +150,30 @@ function QuestionnaireApp() {
     () => (schema ? schema.scales.reduce((acc, s) => acc + s.items.length, 0) : 0),
     [schema]
   )
-  const displayScales = useMemo(() => {
-    if (!schema) return [] as Scale[]
-    const base = schema.scales
-      .filter((s) => s.id !== 'ATTN')
-      .map((s) => ({ ...s, items: [...s.items] }))
-    const attentionItems = schema.scales.find((s) => s.id === 'ATTN')?.items ?? []
-    if (!base.length || !attentionItems.length) return base
-
-    for (const item of attentionItems) {
-      const groupIdx = Math.floor(Math.random() * base.length)
-      const target = base[groupIdx]
-      // Insert into mid/late positions to reduce predictability.
-      const minPos = Math.min(1, target.items.length)
-      const pos = minPos + Math.floor(Math.random() * Math.max(1, target.items.length - minPos + 1))
-      target.items.splice(Math.min(pos, target.items.length), 0, item)
-    }
-    return base
-  }, [schema])
   const answeredItems = useMemo(() => Object.keys(answers).length, [answers])
+
+  useEffect(() => {
+    if (!schema) return
+    const draft = readDraft()
+    const restored = restoreScaleLayout(schema, draft?.scaleLayout)
+    setDisplayScales(restored ?? buildRandomizedScales(schema))
+  }, [schema])
+
+  useEffect(() => {
+    if (!schema || !displayScales.length || submitted) return
+    const draft: QuestionnaireDraft = {
+      schemaVersion: schema.version,
+      participantId,
+      consented,
+      answers,
+      demographics,
+      scaleLayout: displayScales.map((scale) => ({
+        scaleId: scale.id,
+        itemIds: scale.items.map((item) => item.id),
+      })),
+    }
+    window.localStorage.setItem(QUESTIONNAIRE_DRAFT_KEY, JSON.stringify(draft))
+  }, [schema, displayScales, participantId, consented, answers, demographics, submitted])
 
   const missingRequiredDemographics = useMemo(() => {
     if (!schema) return 0
@@ -105,16 +184,69 @@ function QuestionnaireApp() {
     }).length
   }, [schema, demographics])
 
+  const missingDemographicKeys = useMemo(() => {
+    if (!schema) return new Set<string>()
+    return new Set(
+      schema.demographics
+        .filter((f) => f.required)
+        .filter((f) => {
+          const v = demographics[f.key]
+          return v == null || String(v).trim() === ''
+        })
+        .map((f) => f.key)
+    )
+  }, [schema, demographics])
+
+  const missingAnswerIds = useMemo(() => {
+    if (!displayScales.length) return new Set<string>()
+    return new Set(
+      displayScales.flatMap((scale) =>
+        scale.items
+          .filter((item) => answers[item.id] == null || String(answers[item.id]).trim() === '')
+          .map((item) => item.id)
+      )
+    )
+  }, [displayScales, answers])
+
+  const incompleteHint = useMemo(() => {
+    if (!submitAttempted || !schema) return null
+    const parts: string[] = []
+    if (participantId.trim().length < 1) parts.push('被试编号未填')
+    if (missingDemographicKeys.size > 0) parts.push(`基本信息缺 ${missingDemographicKeys.size} 项`)
+    if (missingAnswerIds.size > 0) parts.push(`题目未选 ${missingAnswerIds.size} 道`)
+    if (!consented) parts.push('未勾选同意参加')
+    if (!parts.length) return null
+    return `无法提交：${parts.join('；')}。请补全下方红框内容后再点「提交问卷」。`
+  }, [
+    submitAttempted,
+    schema,
+    participantId,
+    missingDemographicKeys.size,
+    missingAnswerIds.size,
+    consented,
+  ])
+
+  useEffect(() => {
+    if (!submitAttempted || (!error && !incompleteHint)) return
+    const id = window.requestAnimationFrame(() => {
+      const root = mainRef.current ?? document
+      const el = root.querySelector<HTMLElement>('.fieldErrorInput, .fieldErrorBox')
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+    return () => window.cancelAnimationFrame(id)
+  }, [submitAttempted, error, incompleteHint])
+
   async function submitAll() {
     if (!schema) return
+    setSubmitAttempted(true)
     setBusy(true)
     setError(null)
     try {
       const trimmedPid = participantId.trim()
       if (!trimmedPid) throw new Error('participant_id_required')
-      if (!consented) throw new Error('consent_required')
-      if (answeredItems < totalItems) throw new Error('questionnaire_incomplete')
       if (missingRequiredDemographics > 0) throw new Error('demographics_incomplete')
+      if (answeredItems < totalItems) throw new Error('questionnaire_incomplete')
+      if (!consented) throw new Error('consent_required')
 
       const startRes = await apiFetch('/api/q1/session/start', {
         method: 'POST',
@@ -144,9 +276,21 @@ function QuestionnaireApp() {
       })
       if (!completeRes.ok) throw new Error(`q1_complete_failed_${completeRes.status}`)
 
+      window.localStorage.removeItem(QUESTIONNAIRE_DRAFT_KEY)
       setSubmitted(true)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'q1_submit_failed')
+      const code = e instanceof Error ? e.message : 'q1_submit_failed'
+      const friendly =
+        code === 'participant_id_required'
+          ? '请先填写被试编号。'
+          : code === 'demographics_incomplete'
+            ? '你还有基本信息未填写，请补全所有红框项目。'
+            : code === 'questionnaire_incomplete'
+              ? '问卷仍有未作答题目，请完成所有红框题目后再提交。'
+              : code === 'consent_required'
+                ? '请先勾选“我已阅读说明并同意参加本研究”。'
+                : code
+      setError(friendly)
     } finally {
       setBusy(false)
     }
@@ -176,8 +320,10 @@ function QuestionnaireApp() {
         </div>
       </header>
 
-      <main className="card">
-        {error ? <div className="error">出错了：{error}</div> : null}
+      <main ref={mainRef} className="card">
+        {incompleteHint || error ? (
+          <div className="error">{incompleteHint ?? `出错了：${error}`}</div>
+        ) : null}
         {!schema ? <p className="muted">正在加载问卷…</p> : null}
 
         {schema ? (
@@ -200,12 +346,14 @@ function QuestionnaireApp() {
                 • 绝对保密，安心作答：本次调研采用完全匿名的方式进行。您提供的所有信息仅供学术研究的整体数据分析使用，我们将对您的作答严格保密，绝对不会泄露您的任何个人隐私，请您放心畅所欲言。
               </p>
               <p>完成时长通常约 8-12 分钟，请在相对安静的环境下连续作答。</p>
+              <p>若中途误退出，本设备同一浏览器下已填写内容会自动保留，重新打开页面后可继续作答。</p>
               {schema.intro ? <p>{schema.intro}</p> : null}
             </div>
 
             <label className="field">
               <div className="label">被试编号</div>
               <input
+                className={submitAttempted && participantId.trim().length < 1 ? 'fieldErrorInput' : ''}
                 value={participantId}
                 onChange={(e) => setParticipantId(e.target.value)}
                 placeholder="请与后续研究二实验任务使用同一编号"
@@ -222,7 +370,9 @@ function QuestionnaireApp() {
                 </div>
                 {f.type === 'single' ? (
                   <select
-                    className="crttSelect"
+                    className={`crttSelect ${
+                      submitAttempted && missingDemographicKeys.has(f.key) ? 'fieldErrorInput' : ''
+                    }`}
                     value={String(demographics[f.key] ?? '')}
                     onChange={(e) =>
                       setDemographics((prev) => ({ ...prev, [f.key]: e.target.value }))
@@ -237,6 +387,7 @@ function QuestionnaireApp() {
                   </select>
                 ) : f.type === 'number' ? (
                   <input
+                    className={submitAttempted && missingDemographicKeys.has(f.key) ? 'fieldErrorInput' : ''}
                     type="number"
                     min={f.min}
                     max={f.max}
@@ -250,6 +401,7 @@ function QuestionnaireApp() {
                   />
                 ) : (
                   <input
+                    className={submitAttempted && missingDemographicKeys.has(f.key) ? 'fieldErrorInput' : ''}
                     type="text"
                     maxLength={f.maxLength ?? 120}
                     value={String(demographics[f.key] ?? '')}
@@ -269,7 +421,9 @@ function QuestionnaireApp() {
                   <label className="field" key={item.id}>
                     <div className="label">{item.text}</div>
                     <select
-                      className="crttSelect"
+                      className={`crttSelect ${
+                        submitAttempted && missingAnswerIds.has(item.id) ? 'fieldErrorInput' : ''
+                      }`}
                       value={String(answers[item.id] ?? '')}
                       onChange={(e) =>
                         setAnswers((prev) => ({ ...prev, [item.id]: Number(e.target.value) }))
@@ -287,7 +441,9 @@ function QuestionnaireApp() {
               </section>
             ))}
 
-            <label className="checkbox">
+            <label
+              className={`checkbox ${submitAttempted && !consented ? 'fieldErrorBox' : ''}`}
+            >
               <input
                 type="checkbox"
                 checked={consented}
@@ -298,17 +454,14 @@ function QuestionnaireApp() {
 
             <button
               className="primary"
-              disabled={
-                busy ||
-                !consented ||
-                participantId.trim().length < 1 ||
-                answeredItems < totalItems ||
-                missingRequiredDemographics > 0
-              }
+              disabled={busy}
               onClick={() => void submitAll()}
             >
               {busy ? '提交中…' : '提交问卷'}
             </button>
+            <p className="muted" style={{ marginTop: 10 }}>
+              须完成全部题目与基本信息，并勾选同意后方能提交。若有缺项，点击提交后会标红并提示。
+            </p>
           </>
         ) : null}
       </main>

@@ -22,6 +22,8 @@ const PRACTICE_PLAN: CrttPlanItem[] = [
 const PRACTICE_VALID_RT_MIN_MS = 100
 const PRACTICE_VALID_RT_MAX_MS = 3000
 const PRACTICE_MIN_VALID_RT_COUNT = 1
+const FEEDBACK_WIN_MS = 2200
+const FEEDBACK_LOSS_MIN_MS = 3200
 
 function readInviteTokenFromUrl(): string | null {
   const url = new URL(window.location.href)
@@ -85,6 +87,20 @@ function App() {
   const goReactionHandledRef = useRef(false)
   const commitGoReactionRef = useRef<() => void>(() => {})
 
+  async function ensureAudioReady() {
+    if (!audioRef.current) {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const master = ctx.createGain()
+      master.gain.value = 0.22
+      master.connect(ctx.destination)
+      audioRef.current = { ctx, master }
+    }
+    if (audioRef.current.ctx.state !== 'running') {
+      await audioRef.current.ctx.resume()
+    }
+    return audioRef.current
+  }
+
   function intensityToGain(intensity01to10: number) {
     // Browser volume is not calibrated dB. We cap for safety.
     const x = Math.min(10, Math.max(1, intensity01to10))
@@ -97,20 +113,37 @@ function App() {
 
   async function enableAudio() {
     try {
-      if (!audioRef.current) {
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
-        const master = ctx.createGain()
-        master.gain.value = 0.15
-        master.connect(ctx.destination)
-        audioRef.current = { ctx, master }
-      }
-      if (audioRef.current.ctx.state !== 'running') {
-        await audioRef.current.ctx.resume()
-      }
+      await ensureAudioReady()
+      playPreviewBeep()
       setAudioEnabled(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'audio_enable_failed')
     }
+  }
+
+  function playPreviewBeep() {
+    const a = audioRef.current
+    if (!a) return
+    const { ctx, master } = a
+    const osc = ctx.createOscillator()
+    const g = ctx.createGain()
+    osc.type = 'triangle'
+    osc.frequency.value = 880
+    g.gain.value = 0
+    osc.connect(g)
+    g.connect(master)
+    const t0 = ctx.currentTime
+    g.gain.setValueAtTime(0, t0)
+    g.gain.linearRampToValueAtTime(0.12, t0 + 0.01)
+    g.gain.linearRampToValueAtTime(0, t0 + 0.16)
+    osc.start(t0)
+    osc.stop(t0 + 0.18)
+  }
+
+  function vibratePunishment(durationMs: number) {
+    if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return
+    const dur = Math.min(1200, Math.max(150, Math.round(durationMs / 3)))
+    navigator.vibrate([180, 120, dur])
   }
 
   function playWhiteNoise({ gain, durationMs }: { gain: number; durationMs: number }) {
@@ -151,6 +184,22 @@ function App() {
 
     source.start()
     source.stop(t0 + dur / 1000 + 0.01)
+  }
+
+  async function triggerPunishmentFeedback({
+    intensity,
+    durationMs,
+  }: {
+    intensity: number
+    durationMs: number
+  }) {
+    try {
+      await ensureAudioReady()
+      playWhiteNoise({ gain: intensityToGain(intensity), durationMs })
+    } catch {
+      // Keep vibration feedback even if audio playback is blocked on some devices.
+    }
+    vibratePunishment(durationMs)
   }
 
   useEffect(() => {
@@ -418,7 +467,7 @@ function App() {
     setFeedback(msg)
 
     if (item.outcome === 'loss' && audioEnabled && oppIntensity != null && oppDur != null) {
-      playWhiteNoise({ gain: intensityToGain(oppIntensity), durationMs: oppDur })
+      void triggerPunishmentFeedback({ intensity: oppIntensity, durationMs: oppDur })
     }
 
     if (crttMode === 'formal') {
@@ -433,7 +482,11 @@ function App() {
       }).catch((e) => setError(e instanceof Error ? e.message : 'trial_failed'))
     }
 
-    window.setTimeout(() => finishAndAdvance(trialIndex + 1), 1200)
+    const feedbackHoldMs =
+      item.outcome === 'loss'
+        ? Math.max(FEEDBACK_LOSS_MIN_MS, (oppDur ?? 0) + 1600)
+        : FEEDBACK_WIN_MS
+    window.setTimeout(() => finishAndAdvance(trialIndex + 1), feedbackHoldMs)
   }
 
   useEffect(() => {
@@ -512,6 +565,9 @@ function App() {
               <p className="muted">
                 在这个小游戏里，<strong>谁输了，就可能要被罚听一段「沙沙」的白噪音</strong>——声音的<strong>响</strong>和<strong>持续多久</strong>，就是游戏规则里规定的<strong>惩罚手段</strong>（像游戏里扣血、罚时一样，只是这里用声音来表现）。
                 请先把电脑音量调到你觉得<strong>舒服、不刺耳</strong>，再点下面按钮<strong>开声音</strong>（浏览器规定必须你亲手点一下才给播声音）。
+              </p>
+              <p className="muted">
+                点「启用声音」后会先播放一声短提示音；若手机仍没有声音，请检查<strong>媒体音量</strong>、关闭静音模式，并尽量使用 Chrome 或 Safari 打开。
               </p>
               <button className="secondary" onClick={() => void enableAudio()}>
                 {audioEnabled ? '已启用声音' : '启用声音'}
