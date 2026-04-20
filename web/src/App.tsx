@@ -72,6 +72,8 @@ function App() {
   const [plan, setPlan] = useState<CrttPlanItem[] | null>(null)
 
   const [audioEnabled, setAudioEnabled] = useState(false)
+  /** 被试确认已将系统媒体音量调到可感知惩罚；网页无法代为检测或强制系统音量 */
+  const [volumeConfirmed, setVolumeConfirmed] = useState(false)
   const audioRef = useRef<{
     ctx: AudioContext
     master: GainNode
@@ -80,6 +82,7 @@ function App() {
   const [hookStartIso, setHookStartIso] = useState<string | null>(null)
   const [anger, setAnger] = useState<number>(5)
   const [hookCanContinue, setHookCanContinue] = useState(false)
+  const [hookSecondsLeft, setHookSecondsLeft] = useState<number | null>(null)
 
   const [trialIndex, setTrialIndex] = useState(0)
   const [crttMode, setCrttMode] = useState<CrttMode>('practice')
@@ -100,6 +103,8 @@ function App() {
 
   const goReactionHandledRef = useRef(false)
   const commitGoReactionRef = useRef<() => void>(() => {})
+  const [waitRemainingSec, setWaitRemainingSec] = useState<number | null>(null)
+  const waitTimersRef = useRef<{ ui?: number; go?: number }>({})
 
   async function ensureAudioReady() {
     if (!audioRef.current) {
@@ -151,29 +156,36 @@ function App() {
       await ensureAudioReady()
       playPreviewBeep()
       setAudioEnabled(true)
+      setVolumeConfirmed(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'audio_enable_failed')
     }
   }
 
-  function playPreviewBeep() {
+  function playPreviewBeep(loud = false) {
     const a = audioRef.current
     if (!a) return
     const { ctx, master } = a
     const osc = ctx.createOscillator()
     const g = ctx.createGain()
     osc.type = 'triangle'
-    osc.frequency.value = 880
+    osc.frequency.value = loud ? 660 : 880
     g.gain.value = 0
     osc.connect(g)
     g.connect(master)
     const t0 = ctx.currentTime
     g.gain.setValueAtTime(0, t0)
-    const peak = isLikelyMobileAudio() ? 0.2 : 0.12
+    const peak = loud
+      ? isLikelyMobileAudio()
+        ? 0.38
+        : 0.26
+      : isLikelyMobileAudio()
+        ? 0.2
+        : 0.12
     g.gain.linearRampToValueAtTime(peak, t0 + 0.01)
-    g.gain.linearRampToValueAtTime(0, t0 + 0.16)
+    g.gain.linearRampToValueAtTime(0, t0 + (loud ? 0.28 : 0.16))
     osc.start(t0)
-    osc.stop(t0 + 0.18)
+    osc.stop(t0 + (loud ? 0.3 : 0.18))
   }
 
   function vibratePunishment(durationMs: number) {
@@ -293,6 +305,44 @@ function App() {
     practiceRtListRef.current = practiceRtList
   }, [practiceRtList])
 
+  /** 环节一：阅读至少 60 秒，显示剩余秒数 */
+  useEffect(() => {
+    if (step !== 'hook') {
+      setHookSecondsLeft(null)
+      return
+    }
+    let ticks = 60
+    setHookSecondsLeft(ticks)
+    setHookCanContinue(false)
+    const id = window.setInterval(() => {
+      ticks -= 1
+      setHookSecondsLeft(Math.max(0, ticks))
+      if (ticks <= 0) {
+        window.clearInterval(id)
+        setHookCanContinue(true)
+      }
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [step, hookStartIso])
+
+  function clearWaitTimers() {
+    const t = waitTimersRef.current
+    if (t.ui != null) window.clearInterval(t.ui)
+    if (t.go != null) window.clearTimeout(t.go)
+    waitTimersRef.current = {}
+  }
+
+  useEffect(() => {
+    return () => clearWaitTimers()
+  }, [])
+
+  useEffect(() => {
+    if (step !== 'crtt') {
+      clearWaitTimers()
+      setWaitRemainingSec(null)
+    }
+  }, [step])
+
   async function startSession() {
     if (audioEnabled) syncUnlockAudioOnUserGesture()
     setBusy(true)
@@ -315,8 +365,6 @@ function App() {
       setStep('hook')
       const t = new Date().toISOString()
       setHookStartIso(t)
-      setHookCanContinue(false)
-      window.setTimeout(() => setHookCanContinue(true), 60_000)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'start_failed')
     } finally {
@@ -453,6 +501,7 @@ function App() {
   }
 
   function beginReaction() {
+    clearWaitTimers()
     if (audioEnabled) syncUnlockAudioOnUserGesture()
     goReactionHandledRef.current = false
     setPhase('wait')
@@ -460,11 +509,25 @@ function App() {
     setRtMs(null)
     setGoAt(null)
     const delay = 700 + Math.floor(Math.random() * 900) // 700-1600ms
-    window.setTimeout(() => {
+    const start = performance.now()
+    setWaitRemainingSec(Math.max(1, Math.ceil(delay / 1000)))
+    const ui = window.setInterval(() => {
+      const rem = Math.max(0, Math.ceil((start + delay - performance.now()) / 1000))
+      setWaitRemainingSec(rem)
+    }, 120)
+    waitTimersRef.current.ui = ui
+    const go = window.setTimeout(() => {
+      if (waitTimersRef.current.ui != null) {
+        window.clearInterval(waitTimersRef.current.ui)
+        waitTimersRef.current.ui = undefined
+      }
+      setWaitRemainingSec(null)
       goReactionHandledRef.current = false
       setGoAt(performance.now())
       setPhase('go')
+      waitTimersRef.current.go = undefined
     }, delay)
+    waitTimersRef.current.go = go
   }
 
   commitGoReactionRef.current = () => {
@@ -649,6 +712,33 @@ function App() {
               <button className="secondary" onClick={() => void enableAudio()}>
                 {audioEnabled ? '已启用声音' : '启用声音'}
               </button>
+              {audioEnabled ? (
+                <>
+                  <p className="muted" style={{ marginTop: 12 }}>
+                    <strong>关于系统音量：</strong>网页<strong>无法检测或替你调高</strong>手机/电脑的系统媒体音量。若把音量关到最低，惩罚会听不到，实验要求的效果无法实现。请务必先把<strong>媒体音量</strong>调到<strong>中等以上</strong>，再点下面「大声自检」确认能听见。
+                  </p>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      syncUnlockAudioOnUserGesture()
+                      playPreviewBeep(true)
+                    }}
+                  >
+                    大声自检（再播一次较响的提示音）
+                  </button>
+                  <label className="checkbox" style={{ marginTop: 14 }}>
+                    <input
+                      type="checkbox"
+                      checked={volumeConfirmed}
+                      onChange={(e) => setVolumeConfirmed(e.target.checked)}
+                    />
+                    <span>
+                      我已将设备<strong>媒体音量</strong>调到中等以上，并能在当前环境下清楚听到上面的提示音；我明白若仍把音量关到最低导致听不到惩罚，属于未按要求完成实验。
+                    </span>
+                  </label>
+                </>
+              ) : null}
             </div>
 
             <button
@@ -658,6 +748,7 @@ function App() {
                 !consented ||
                 participantId.trim().length < 1 ||
                 !audioEnabled ||
+                !volumeConfirmed ||
                 isWeChatInApp() ||
                 (readInviteTokenFromUrl() != null && inviteGate !== 'ok')
               }
@@ -671,6 +762,17 @@ function App() {
         {step === 'hook' ? (
           <>
             <h1>环节一：阅读</h1>
+            {hookSecondsLeft != null ? (
+              <div className="hookCountdown" aria-live="polite">
+                {!hookCanContinue ? (
+                  <>
+                    最短阅读计时剩余：<strong className="hookCountdownNum">{hookSecondsLeft}</strong> 秒
+                  </>
+                ) : (
+                  <>已满足最短阅读时间，可以继续。</>
+                )}
+              </div>
+            ) : null}
             <p className="muted">
               稍后会有一位<strong>游戏伙伴</strong>和你一起完成有奖小任务，下面用 <strong>游戏伙伴 B</strong> 来称呼他/她。
               <strong>现在请你先读下面这段故事</strong>，把它当成你和<strong>游戏伙伴 B</strong> 目前是怎么搭档的。请<strong>至少读满大约 1 分钟</strong>再点下面的按钮（页面会帮你计时）。
@@ -814,8 +916,16 @@ function App() {
             ) : null}
 
             {phase === 'wait' ? (
-              <div className="bigCenter">
-                <div className="ready">请等待…</div>
+              <div className="bigCenter waitStack">
+                <div className="ready">请等待，即将出现 GO</div>
+                {waitRemainingSec != null && waitRemainingSec > 0 ? (
+                  <div className="waitCountNum" aria-live="polite">
+                    {waitRemainingSec}
+                  </div>
+                ) : (
+                  <div className="waitCountNum waitCountDim">…</div>
+                )}
+                <p className="muted waitCountHint">数字为大约剩余整秒，归零后很快出现 GO。</p>
               </div>
             ) : null}
 
