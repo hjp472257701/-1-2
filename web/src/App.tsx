@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import './App.css'
 import { apiFetch } from './api'
 
@@ -134,7 +134,19 @@ function App() {
         audioRef.current = { ctx, master }
       }
       const { ctx } = audioRef.current
-      if (ctx.state === 'suspended') void ctx.resume()
+      const st = ctx.state as string
+      if (st === 'suspended' || st === 'interrupted') void ctx.resume()
+    } catch {
+      // ignore
+    }
+  }
+
+  /** 从后台/来电返回时尽力恢复；真正播放惩罚音仍依赖下一次手势里的 resume + then */
+  function reviveAudioAfterBackground() {
+    try {
+      const ctx = audioRef.current?.ctx
+      if (!ctx || ctx.state === 'closed') return
+      if (ctx.state !== 'running') void ctx.resume().catch(() => {})
     } catch {
       // ignore
     }
@@ -235,11 +247,26 @@ function App() {
     source.stop(t0 + dur / 1000 + 0.01)
   }
 
-  /** 仅在手势回调里调用：禁止 await，否则 iOS 上惩罚音可能无声 */
+  /**
+   * 仅在手势回调里调用。来电/切后台后 context 常为 suspended：须先 resume，
+   * 并在 resume 完成后再调度白噪音，否则后续多轮会无声。
+   */
   function punishmentFeedbackFromUserGesture(intensity: number, durationMs: number) {
     try {
       syncUnlockAudioOnUserGesture()
-      playWhiteNoise({ gain: intensityToGain(intensity), durationMs })
+      const a = audioRef.current
+      if (!a) return
+      const { ctx } = a
+      const gain = intensityToGain(intensity)
+      const play = () => {
+        try {
+          playWhiteNoise({ gain, durationMs })
+        } catch {
+          // ignore
+        }
+      }
+      if (ctx.state === 'running') play()
+      else void ctx.resume().then(play).catch(play)
     } catch {
       // ignore
     }
@@ -248,6 +275,21 @@ function App() {
 
   useEffect(() => {
     document.title = '研究二 · 实验任务'
+  }, [])
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      reviveAudioAfterBackground()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('pageshow', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('pageshow', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
   }, [])
 
   useEffect(() => {
@@ -305,14 +347,14 @@ function App() {
     practiceRtListRef.current = practiceRtList
   }, [practiceRtList])
 
-  /** 环节一：阅读至少 60 秒，显示剩余秒数 */
-  useEffect(() => {
+  /** 环节一：阅读至少 60 秒；useLayoutEffect 保证首屏即有倒计时 */
+  useLayoutEffect(() => {
     if (step !== 'hook') {
       setHookSecondsLeft(null)
       return
     }
     let ticks = 60
-    setHookSecondsLeft(ticks)
+    setHookSecondsLeft(60)
     setHookCanContinue(false)
     const id = window.setInterval(() => {
       ticks -= 1
@@ -362,6 +404,8 @@ function App() {
       const data = (await r.json()) as { sessionId: string; plan: CrttPlanItem[] }
       setSessionId(data.sessionId)
       setPlan(data.plan)
+      setHookCanContinue(false)
+      setHookSecondsLeft(60)
       setStep('hook')
       const t = new Date().toISOString()
       setHookStartIso(t)
@@ -508,7 +552,8 @@ function App() {
     setFeedback(null)
     setRtMs(null)
     setGoAt(null)
-    const delay = 700 + Math.floor(Math.random() * 900) // 700-1600ms
+    // 约 2.2–4.0 秒：过短的随机间隔在手机上看不清「倒计时」
+    const delay = 2200 + Math.floor(Math.random() * 1800)
     const start = performance.now()
     setWaitRemainingSec(Math.max(1, Math.ceil(delay / 1000)))
     const ui = window.setInterval(() => {
