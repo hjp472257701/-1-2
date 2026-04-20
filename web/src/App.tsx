@@ -25,6 +25,19 @@ const PRACTICE_MIN_VALID_RT_COUNT = 1
 const FEEDBACK_WIN_MS = 2200
 const FEEDBACK_LOSS_MIN_MS = 3200
 
+function isLikelyMobileAudio(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false
+  if (navigator.maxTouchPoints > 1) return true
+  if (window.matchMedia?.('(pointer: coarse)').matches) return true
+  return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+}
+
+/** 微信内置浏览器：Web Audio 惩罚音常被系统拦截，实验数据可能无效 */
+function isWeChatInApp(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /MicroMessenger/i.test(navigator.userAgent)
+}
+
 function readInviteTokenFromUrl(): string | null {
   const url = new URL(window.location.href)
   return url.searchParams.get('invite') || url.searchParams.get('i')
@@ -53,6 +66,7 @@ function App() {
   const [consented, setConsented] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [linkCopied, setLinkCopied] = useState(false)
 
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [plan, setPlan] = useState<CrttPlanItem[] | null>(null)
@@ -91,7 +105,7 @@ function App() {
     if (!audioRef.current) {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
       const master = ctx.createGain()
-      master.gain.value = 0.22
+      master.gain.value = isLikelyMobileAudio() ? 0.38 : 0.22
       master.connect(ctx.destination)
       audioRef.current = { ctx, master }
     }
@@ -101,18 +115,39 @@ function App() {
     return audioRef.current
   }
 
+  /**
+   * 必须在用户手势（click / pointerdown）的同步调用栈里执行，否则 iOS Safari 会保持
+   * AudioContext suspended，导致后续惩罚音无声。
+   */
+  function syncUnlockAudioOnUserGesture() {
+    try {
+      if (!audioRef.current) {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+        const master = ctx.createGain()
+        master.gain.value = isLikelyMobileAudio() ? 0.38 : 0.22
+        master.connect(ctx.destination)
+        audioRef.current = { ctx, master }
+      }
+      const { ctx } = audioRef.current
+      if (ctx.state === 'suspended') void ctx.resume()
+    } catch {
+      // ignore
+    }
+  }
+
   function intensityToGain(intensity01to10: number) {
     // Browser volume is not calibrated dB. We cap for safety.
     const x = Math.min(10, Math.max(1, intensity01to10))
     // Map 1..10 -> ~0.02..0.25 (soft to noticeable, not painfully loud)
     const min = 0.02
-    const max = 0.25
+    const max = isLikelyMobileAudio() ? 0.34 : 0.25
     const t = (x - 1) / 9
     return min + t * (max - min)
   }
 
   async function enableAudio() {
     try {
+      syncUnlockAudioOnUserGesture()
       await ensureAudioReady()
       playPreviewBeep()
       setAudioEnabled(true)
@@ -134,7 +169,8 @@ function App() {
     g.connect(master)
     const t0 = ctx.currentTime
     g.gain.setValueAtTime(0, t0)
-    g.gain.linearRampToValueAtTime(0.12, t0 + 0.01)
+    const peak = isLikelyMobileAudio() ? 0.2 : 0.12
+    g.gain.linearRampToValueAtTime(peak, t0 + 0.01)
     g.gain.linearRampToValueAtTime(0, t0 + 0.16)
     osc.start(t0)
     osc.stop(t0 + 0.18)
@@ -176,7 +212,8 @@ function App() {
     const t0 = ctx.currentTime
     const attack = 0.02
     const release = 0.04
-    const target = Math.min(0.35, Math.max(0, gain))
+    const cap = isLikelyMobileAudio() ? 0.52 : 0.35
+    const target = Math.min(cap, Math.max(0, gain))
     g.gain.setValueAtTime(0, t0)
     g.gain.linearRampToValueAtTime(target, t0 + attack)
     g.gain.setValueAtTime(target, t0 + Math.max(attack, dur / 1000 - release))
@@ -186,18 +223,13 @@ function App() {
     source.stop(t0 + dur / 1000 + 0.01)
   }
 
-  async function triggerPunishmentFeedback({
-    intensity,
-    durationMs,
-  }: {
-    intensity: number
-    durationMs: number
-  }) {
+  /** 仅在手势回调里调用：禁止 await，否则 iOS 上惩罚音可能无声 */
+  function punishmentFeedbackFromUserGesture(intensity: number, durationMs: number) {
     try {
-      await ensureAudioReady()
+      syncUnlockAudioOnUserGesture()
       playWhiteNoise({ gain: intensityToGain(intensity), durationMs })
     } catch {
-      // Keep vibration feedback even if audio playback is blocked on some devices.
+      // ignore
     }
     vibratePunishment(durationMs)
   }
@@ -262,6 +294,7 @@ function App() {
   }, [practiceRtList])
 
   async function startSession() {
+    if (audioEnabled) syncUnlockAudioOnUserGesture()
     setBusy(true)
     setError(null)
     try {
@@ -420,6 +453,7 @@ function App() {
   }
 
   function beginReaction() {
+    if (audioEnabled) syncUnlockAudioOnUserGesture()
     goReactionHandledRef.current = false
     setPhase('wait')
     setFeedback(null)
@@ -467,7 +501,7 @@ function App() {
     setFeedback(msg)
 
     if (item.outcome === 'loss' && audioEnabled && oppIntensity != null && oppDur != null) {
-      void triggerPunishmentFeedback({ intensity: oppIntensity, durationMs: oppDur })
+      punishmentFeedbackFromUserGesture(oppIntensity, oppDur)
     }
 
     if (crttMode === 'formal') {
@@ -500,6 +534,30 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [step, phase])
 
+  async function copyCurrentPageUrl() {
+    const url = window.location.href
+    try {
+      await navigator.clipboard.writeText(url)
+      setLinkCopied(true)
+      window.setTimeout(() => setLinkCopied(false), 2500)
+    } catch {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = url
+        ta.style.position = 'fixed'
+        ta.style.left = '-9999px'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        setLinkCopied(true)
+        window.setTimeout(() => setLinkCopied(false), 2500)
+      } catch {
+        setError('无法自动复制链接，请长按地址栏手动复制。')
+      }
+    }
+  }
+
   return (
     <div className="page">
       <header className="topbar">
@@ -509,6 +567,24 @@ function App() {
 
       <main className="card">
         {error ? <div className="error">出错了：{error}</div> : null}
+        {isWeChatInApp() ? (
+          <div className="wechatBanner">
+            <strong>当前是微信内置浏览器</strong>
+            <p className="wechatBannerText">
+              研究二的<strong>惩罚白噪音</strong>在微信里经常<strong>完全无法播放</strong>，会导致实验无效。请换用系统浏览器完成：
+            </p>
+            <ol className="wechatBannerList">
+              <li>点微信右上角 <strong>「···」</strong></li>
+              <li>选择 <strong>「在浏览器中打开」</strong> 或 <strong>「用 Safari 打开」</strong></li>
+              <li>在 Safari / Chrome 里重新打开本链接，再点「启用声音」</li>
+            </ol>
+            <div className="wechatBannerActions">
+              <button type="button" className="secondary" onClick={() => void copyCurrentPageUrl()}>
+                {linkCopied ? '已复制链接' : '复制本页链接'}
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         {step === 'login' ? (
           <>
@@ -516,7 +592,7 @@ function App() {
             <p className="muted notice">
               <strong>研究说明：</strong>本页为<strong>研究二（实验任务）</strong>。若你尚未完成<strong>研究一（问卷调查）</strong>，请先完成问卷，再使用<strong>同一被试编号</strong>进入本页。
               <br />
-              <strong>你需要准备：</strong>一台能出声的手机、平板或电脑；用 <strong>Chrome</strong>、<strong>Safari（iPhone）</strong> 或 <strong>Edge</strong> 打开本页。若用电脑，反应时环节中可用<strong>空格键</strong>反应；手机和平板请用屏幕上出现的<strong>大按钮</strong>反应。
+              <strong>你需要准备：</strong>一台能出声的手机、平板或电脑；请尽量用 <strong>Safari / Chrome</strong> 打开本页（<strong>不要只用微信里直接打开</strong>，否则惩罚音可能无声）。若用电脑，反应时环节中可用<strong>空格键</strong>反应；手机和平板请用屏幕上出现的<strong>大按钮</strong>反应。
               <br />
               <strong>你要做的：</strong>填好下面的编号 → 勾选同意 → 点一次「启用声音」→ 点「开始」。编号请填<strong>通知或邮件里给你的那个</strong>（须与<strong>研究一问卷所用编号一致</strong>）；若你参加过本课题组别的线上任务，填<strong>当时同一个编号</strong>。若是点链接进来的，<strong>不要改地址栏里的内容</strong>。
             </p>
@@ -567,7 +643,8 @@ function App() {
                 请先把电脑音量调到你觉得<strong>舒服、不刺耳</strong>，再点下面按钮<strong>开声音</strong>（浏览器规定必须你亲手点一下才给播声音）。
               </p>
               <p className="muted">
-                点「启用声音」后会先播放一声短提示音；若手机仍没有声音，请检查<strong>媒体音量</strong>、关闭静音模式，并尽量使用 Chrome 或 Safari 打开。
+                点「启用声音」后会先播放一声短提示音。若仍无声：请调高<strong>媒体音量</strong>；iPhone 请确认<strong>侧静音开关未拨到静音</strong>；尽量用
+                <strong>Safari 或 Chrome</strong> 打开（<strong>微信内置浏览器</strong>常会导致实验页无声，请点右上角「…」用浏览器打开）。
               </p>
               <button className="secondary" onClick={() => void enableAudio()}>
                 {audioEnabled ? '已启用声音' : '启用声音'}
@@ -581,11 +658,12 @@ function App() {
                 !consented ||
                 participantId.trim().length < 1 ||
                 !audioEnabled ||
+                isWeChatInApp() ||
                 (readInviteTokenFromUrl() != null && inviteGate !== 'ok')
               }
               onClick={() => void startSession()}
             >
-              {busy ? '请稍候…' : '开始'}
+              {busy ? '请稍候…' : isWeChatInApp() ? '请先用浏览器打开本页' : '开始'}
             </button>
           </>
         ) : null}
