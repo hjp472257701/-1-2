@@ -258,21 +258,98 @@ input[type='range'] {
   }
 }
 
-.hookCountdown {
-  margin: 0 0 14px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid var(--accent-border);
-  background: var(--accent-bg);
+/* 环节一：60 秒倒计时 +「继续」按钮融为一块，便于同时看到计时与操作 */
+.hookContinueCard {
+  margin: 20px 0 0;
+  border-radius: 14px;
+  border: 2px solid var(--accent-border);
+  overflow: hidden;
+  background: var(--bg);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 45%, transparent);
+}
+
+.hookContinueTimer {
+  padding: 16px 16px 14px;
+  text-align: center;
+  background: color-mix(in srgb, var(--accent-bg) 88%, var(--bg));
+  border-bottom: 1px solid var(--border);
+  min-height: 5.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.hookContinueTimerLabel {
+  font-size: 15px;
+  font-weight: 600;
   color: var(--text-h);
-  font-size: 17px;
-  line-height: 1.45;
+}
+
+.hookContinueTimerRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
 }
 
 .hookCountdownNum {
   font-family: var(--mono);
-  font-size: 28px;
+  font-size: 44px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  color: var(--text-h);
+}
+
+.hookContinueTimerUnit {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-m);
+}
+
+.hookContinueReady {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-h);
+  max-width: 22rem;
+}
+
+.hookContinuePreparing {
+  font-size: 15px;
+  color: var(--text-m);
+}
+
+.hookContinueBtn {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 16px 18px;
+  font-size: 17px;
   font-weight: 700;
+  line-height: 1.35;
+  border: none;
+  border-radius: 0;
+  cursor: pointer;
+  color: var(--text-h);
+  background: var(--accent-bg);
+  transition: filter 0.12s ease, transform 0.1s ease;
+}
+
+.hookContinueBtn:hover:not(:disabled) {
+  filter: brightness(1.04);
+}
+
+.hookContinueBtn:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.hookContinueBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+  background: color-mix(in srgb, var(--accent-bg) 55%, var(--bg));
 }
 
 .waitStack {
@@ -280,7 +357,7 @@ input[type='range'] {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 10px;
   height: auto;
   min-height: 220px;
   padding: 16px 12px;

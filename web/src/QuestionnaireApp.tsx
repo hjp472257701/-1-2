@@ -356,7 +356,7 @@ function QuestionnaireApp() {
                 className={submitAttempted && participantId.trim().length < 1 ? 'fieldErrorInput' : ''}
                 value={participantId}
                 onChange={(e) => setParticipantId(e.target.value)}
-                placeholder="请与后续研究二实验任务使用同一编号"
+                placeholder="请填写通知的ID号"
                 autoComplete="off"
               />
             </label>

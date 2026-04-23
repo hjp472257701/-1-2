@@ -67,6 +67,8 @@ function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [linkCopied, setLinkCopied] = useState(false)
+  /** 研究二首页：点过「开始」后，对未填项标红 */
+  const [loginAttempted, setLoginAttempted] = useState(false)
 
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [plan, setPlan] = useState<CrttPlanItem[] | null>(null)
@@ -86,8 +88,8 @@ function App() {
 
   const [trialIndex, setTrialIndex] = useState(0)
   const [crttMode, setCrttMode] = useState<CrttMode>('practice')
-  const [intensity, setIntensity] = useState(5)
-  const [durationSec, setDurationSec] = useState(2)
+  const [intensity, setIntensity] = useState<number | null>(null)
+  const [durationSec, setDurationSec] = useState<number | null>(null)
   const [phase, setPhase] = useState<'set' | 'wait' | 'go' | 'feedback' | 'practiceComplete'>(
     'set'
   )
@@ -200,10 +202,36 @@ function App() {
     osc.stop(t0 + (loud ? 0.3 : 0.18))
   }
 
-  function vibratePunishment(durationMs: number) {
+  /**
+   * 与惩罚白噪音同时触发。Web Vibration API 无标准「强度」参数，用脉冲长短与间隔疏密近似响度；
+   * 总时长对齐惩罚 duration（有浏览器对 pattern 长度/总时长的上限，故做截断）。
+   */
+  function vibratePunishment(intensity01to10: number, durationMs: number) {
     if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return
-    const dur = Math.min(1200, Math.max(150, Math.round(durationMs / 3)))
-    navigator.vibrate([180, 120, dur])
+    const total = Math.min(5000, Math.max(0, Math.round(durationMs)))
+    if (total <= 0) return
+    const lvl = Math.min(10, Math.max(1, Math.round(intensity01to10)))
+    const pulseMs = Math.round(40 + lvl * 16)
+    const gapMs = Math.max(12, Math.round(100 - lvl * 8))
+    const pattern: number[] = []
+    let used = 0
+    while (used < total && pattern.length < 40) {
+      const vib = Math.min(pulseMs, total - used)
+      if (vib < 1) break
+      pattern.push(vib)
+      used += vib
+      if (used >= total) break
+      const gap = Math.min(gapMs, total - used)
+      if (gap < 1) break
+      pattern.push(gap)
+      used += gap
+    }
+    try {
+      navigator.vibrate(0)
+      navigator.vibrate(pattern.length ? pattern : [Math.min(300, total)])
+    } catch {
+      // ignore
+    }
   }
 
   function playWhiteNoise({ gain, durationMs }: { gain: number; durationMs: number }) {
@@ -270,7 +298,7 @@ function App() {
     } catch {
       // ignore
     }
-    vibratePunishment(durationMs)
+    vibratePunishment(intensity, durationMs)
   }
 
   useEffect(() => {
@@ -385,6 +413,32 @@ function App() {
     }
   }, [step])
 
+  function scrollToFirstLoginFieldError() {
+    window.requestAnimationFrame(() => {
+      const root = document.querySelector('main.card')
+      const el = root?.querySelector<HTMLElement>('.fieldErrorInput, .fieldErrorBox')
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
+  }
+
+  function tryStartSession() {
+    setLoginAttempted(true)
+    setError(null)
+    const inv = readInviteTokenFromUrl()
+    if (isWeChatInApp()) return
+    if (inv != null && inviteGate !== 'ok') return
+    if (
+      participantId.trim().length < 1 ||
+      !consented ||
+      !audioEnabled ||
+      (audioEnabled && !volumeConfirmed)
+    ) {
+      scrollToFirstLoginFieldError()
+      return
+    }
+    void startSession()
+  }
+
   async function startSession() {
     if (audioEnabled) syncUnlockAudioOnUserGesture()
     setBusy(true)
@@ -436,6 +490,8 @@ function App() {
       setStep('crtt')
       setCrttMode('practice')
       setTrialIndex(0)
+      setIntensity(null)
+      setDurationSec(null)
       setPhase('set')
       setFeedback(null)
       setGoAt(null)
@@ -490,8 +546,8 @@ function App() {
   function beginFormalCrtt() {
     setCrttMode('formal')
     setTrialIndex(0)
-    setIntensity(5)
-    setDurationSec(2)
+    setIntensity(null)
+    setDurationSec(null)
     setPhase('set')
     setFeedback(null)
     setGoAt(null)
@@ -501,8 +557,8 @@ function App() {
   function restartPractice() {
     setCrttMode('practice')
     setTrialIndex(0)
-    setIntensity(5)
-    setDurationSec(2)
+    setIntensity(null)
+    setDurationSec(null)
     setPhase('set')
     setFeedback(null)
     setGoAt(null)
@@ -536,8 +592,8 @@ function App() {
       return
     }
     setTrialIndex(nextIndex)
-    setIntensity(5)
-    setDurationSec(2)
+    setIntensity(null)
+    setDurationSec(null)
     setPhase('set')
     setFeedback(null)
     setGoAt(null)
@@ -545,6 +601,7 @@ function App() {
   }
 
   function beginReaction() {
+    if (intensity == null || durationSec == null) return
     clearWaitTimers()
     if (audioEnabled) syncUnlockAudioOnUserGesture()
     goReactionHandledRef.current = false
@@ -582,6 +639,8 @@ function App() {
     const item = currentPlan?.[trialIndex] ?? null
     if (!item) return
     goReactionHandledRef.current = true
+
+    if (intensity == null || durationSec == null) return
 
     const rt = Math.max(0, Math.round(performance.now() - goAt))
     setRtMs(rt)
@@ -673,7 +732,7 @@ function App() {
         <div className="meta" />
       </header>
 
-      <main className="card">
+      <main className={step === 'login' ? 'card loginForm' : 'card'}>
         {error ? <div className="error">出错了：{error}</div> : null}
         {isWeChatInApp() ? (
           <div className="wechatBanner">
@@ -697,6 +756,17 @@ function App() {
         {step === 'login' ? (
           <>
             <h1>欢迎参与</h1>
+            {loginAttempted &&
+            !isWeChatInApp() &&
+            (readInviteTokenFromUrl() == null || inviteGate === 'ok') &&
+            (participantId.trim().length < 1 ||
+              !consented ||
+              !audioEnabled ||
+              (audioEnabled && !volumeConfirmed)) ? (
+              <div className="error" role="status">
+                请补全下方标红项后再点「开始」。
+              </div>
+            ) : null}
             <p className="muted notice">
               <strong>研究说明：</strong>本页为<strong>研究二（实验任务）</strong>。若你尚未完成<strong>研究一（问卷调查）</strong>，请先完成问卷，再使用<strong>同一被试编号</strong>进入本页。
               <br />
@@ -724,6 +794,7 @@ function App() {
             <label className="field">
               <div className="label">编号</div>
               <input
+                className={loginAttempted && participantId.trim().length < 1 ? 'fieldErrorInput' : undefined}
                 value={participantId}
                 onChange={(e) => setParticipantId(e.target.value)}
                 placeholder="与通知中一致"
@@ -735,7 +806,11 @@ function App() {
               <p className="muted">当前链接已绑定编号，无需修改。</p>
             ) : null}
 
-            <label className="checkbox">
+            <label
+              className={
+                'checkbox' + (loginAttempted && !consented ? ' fieldErrorBox' : '')
+              }
+            >
               <input
                 type="checkbox"
                 checked={consented}
@@ -744,7 +819,11 @@ function App() {
               <span>我已经看过知情同意书里的说明，愿意参加；中途随时可以退出。</span>
             </label>
 
-            <div className="audioBox">
+            <div
+              className={
+                'audioBox' + (loginAttempted && !audioEnabled ? ' fieldErrorBox' : '')
+              }
+            >
               <div className="label">声音</div>
               <p className="muted">
                 在这个小游戏里，<strong>谁输了，就可能要被罚听一段「沙沙」的白噪音</strong>——声音的<strong>响</strong>和<strong>持续多久</strong>，就是游戏规则里规定的<strong>惩罚手段</strong>（像游戏里扣血、罚时一样，只是这里用声音来表现）。
@@ -772,7 +851,13 @@ function App() {
                   >
                     大声自检（再播一次较响的提示音）
                   </button>
-                  <label className="checkbox" style={{ marginTop: 14 }}>
+                  <label
+                    className={
+                      'checkbox' +
+                      (loginAttempted && audioEnabled && !volumeConfirmed ? ' fieldErrorBox' : '')
+                    }
+                    style={{ marginTop: 14 }}
+                  >
                     <input
                       type="checkbox"
                       checked={volumeConfirmed}
@@ -790,14 +875,10 @@ function App() {
               className="primary"
               disabled={
                 busy ||
-                !consented ||
-                participantId.trim().length < 1 ||
-                !audioEnabled ||
-                !volumeConfirmed ||
                 isWeChatInApp() ||
                 (readInviteTokenFromUrl() != null && inviteGate !== 'ok')
               }
-              onClick={() => void startSession()}
+              onClick={() => void tryStartSession()}
             >
               {busy ? '请稍候…' : isWeChatInApp() ? '请先用浏览器打开本页' : '开始'}
             </button>
@@ -807,17 +888,6 @@ function App() {
         {step === 'hook' ? (
           <>
             <h1>环节一：阅读</h1>
-            {hookSecondsLeft != null ? (
-              <div className="hookCountdown" aria-live="polite">
-                {!hookCanContinue ? (
-                  <>
-                    最短阅读计时剩余：<strong className="hookCountdownNum">{hookSecondsLeft}</strong> 秒
-                  </>
-                ) : (
-                  <>已满足最短阅读时间，可以继续。</>
-                )}
-              </div>
-            ) : null}
             <p className="muted">
               稍后会有一位<strong>游戏伙伴</strong>和你一起完成有奖小任务，下面用 <strong>游戏伙伴 B</strong> 来称呼他/她。
               <strong>现在请你先读下面这段故事</strong>，把它当成你和<strong>游戏伙伴 B</strong> 目前是怎么搭档的。请<strong>至少读满大约 1 分钟</strong>再点下面的按钮（页面会帮你计时）。
@@ -851,13 +921,33 @@ function App() {
               <div className="rangeValue">你选的分数：{anger}</div>
             </label>
 
-            <button
-              className="primary"
-              disabled={busy || !hookCanContinue}
-              onClick={() => void submitHook()}
-            >
-              {hookCanContinue ? (busy ? '提交中…' : '我读完了，继续') : '请再读一会儿（未满约 60 秒还不能继续）…'}
-            </button>
+            <div className="hookContinueCard">
+              <div className="hookContinueTimer" aria-live="polite">
+                {hookCanContinue ? (
+                  <div className="hookContinueReady">已满足最短阅读时间，可点击下方按钮继续。</div>
+                ) : hookSecondsLeft != null ? (
+                  <>
+                    <div className="hookContinueTimerLabel">最短阅读计时剩余</div>
+                    <div className="hookContinueTimerRow">
+                      <span className="hookCountdownNum" aria-hidden>
+                        {hookSecondsLeft}
+                      </span>
+                      <span className="hookContinueTimerUnit">秒</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="hookContinuePreparing">准备计时中…</div>
+                )}
+              </div>
+              <button
+                type="button"
+                className="hookContinueBtn"
+                disabled={busy || !hookCanContinue}
+                onClick={() => void submitHook()}
+              >
+                {hookCanContinue ? (busy ? '提交中…' : '我读完了，继续') : '请再读一会儿（未满约 60 秒还不能继续）…'}
+              </button>
+            </div>
           </>
         ) : null}
 
@@ -929,9 +1019,12 @@ function App() {
                     <div className="label">游戏惩罚有多响（1 最轻，10 最响）</div>
                     <select
                       className="crttSelect"
-                      value={intensity}
-                      onChange={(e) => setIntensity(Number(e.target.value))}
+                      value={intensity ?? ''}
+                      onChange={(e) =>
+                        setIntensity(e.target.value === '' ? null : Number(e.target.value))
+                      }
                     >
+                      <option value="">请选择</option>
                       {INTENSITY_OPTIONS.map((n) => (
                         <option key={n} value={n}>
                           {n}
@@ -943,9 +1036,12 @@ function App() {
                     <div className="label">惩罚声音持续几秒（0～5，含半秒一档）</div>
                     <select
                       className="crttSelect"
-                      value={durationSec}
-                      onChange={(e) => setDurationSec(Number(e.target.value))}
+                      value={durationSec ?? ''}
+                      onChange={(e) =>
+                        setDurationSec(e.target.value === '' ? null : Number(e.target.value))
+                      }
                     >
+                      <option value="">请选择</option>
                       {DURATION_OPTIONS.map((d) => (
                         <option key={d} value={d}>
                           {d} 秒
@@ -954,9 +1050,18 @@ function App() {
                     </select>
                   </label>
                 </div>
-                <button className="primary" onClick={beginReaction}>
+                <button
+                  className="primary"
+                  onClick={beginReaction}
+                  disabled={intensity == null || durationSec == null}
+                >
                   选好了，开始这一轮
                 </button>
+                {intensity == null || durationSec == null ? (
+                  <p className="muted" style={{ marginTop: 10, textAlign: 'center' }}>
+                    请先在上方两个下拉框中各选择一项（无默认响度/时长，须主动选择）。
+                  </p>
+                ) : null}
               </>
             ) : null}
 
