@@ -43,6 +43,7 @@ npm run dev
 /api/export.csv?token=EXPORT_TOKEN
 /api/export_trials.csv?token=EXPORT_TOKEN
 /api/export_research1.csv?token=EXPORT_TOKEN
+/api/export_research1_items.csv?token=EXPORT_TOKEN
 /api/export_merged.csv?token=EXPORT_TOKEN
 ```
 
@@ -72,6 +73,7 @@ npm run dev
 **`trials_json` 里每一条**大致对应：`trial_index`（第几轮 0–24）、`outcome`（`win`/`loss` 相对被试）、`participant_rt_ms`（按空格的反应毫秒）、`participant_intensity` / `participant_duration_ms`（被试为对方设的响度与时长）、`opponent_intensity` / `opponent_duration_ms`（本轮若被试输，程序施加的惩罚参数）。用 Excel 看 JSON 不便时，可复制到 [jsonformatter.org](https://jsonformatter.org) 或导入 R/Python 解析。
 
 `/api/export_research1.csv` 为研究一问卷导出（每行一个问卷会话），含人口学与 PRDS/PMD/AQ/ERQ-CR。  
+`/api/export_research1_items.csv` 为研究一**逐题原始作答**（每行一题，长表；便于因子分析或核对单题）。  
 `/api/export_merged.csv` 为研究一+研究二合并导出（按 `participant_id` 关联）。
 
 ## 给被试发链接（邀请链接）

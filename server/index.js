@@ -657,12 +657,14 @@ app.get('/admin', (_req, res) => {
           <button id="save">保存口令</button>
           <a id="downloadQ2" class="btn" href="#"><button type="button">下载研究二 CSV</button></a>
           <a id="downloadQ1" class="btn" href="#"><button type="button">下载研究一 CSV</button></a>
+          <a id="downloadQ1Items" class="btn" href="#"><button type="button">下载研究一逐题 CSV</button></a>
           <a id="downloadMerged" class="btn" href="#"><button type="button">下载合并 CSV</button></a>
           <button id="clear" type="button">清除本地口令</button>
         </div>
         <div id="err" class="err" style="display:none"></div>
         <p style="margin-top:12px" class="hint">研究二被试级导出：/api/export.csv?token=EXPORT_TOKEN</p>
         <p class="hint">研究一问卷导出：/api/export_research1.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究一逐题原始作答：/api/export_research1_items.csv?token=EXPORT_TOKEN</p>
         <p class="hint">研究一+研究二合并导出：/api/export_merged.csv?token=EXPORT_TOKEN</p>
         <p class="hint">trial 级导出：/api/export_trials.csv?token=EXPORT_TOKEN</p>
       </div>
@@ -705,6 +707,7 @@ app.get('/admin', (_req, res) => {
       const $token = document.getElementById('token')
       const $downloadQ2 = document.getElementById('downloadQ2')
       const $downloadQ1 = document.getElementById('downloadQ1')
+      const $downloadQ1Items = document.getElementById('downloadQ1Items')
       const $downloadMerged = document.getElementById('downloadMerged')
       const $err = document.getElementById('err')
       function setErr(msg) {
@@ -715,6 +718,7 @@ app.get('/admin', (_req, res) => {
         const t = ($token.value || '').trim()
         $downloadQ2.href = '/api/export.csv?token=' + encodeURIComponent(t)
         $downloadQ1.href = '/api/export_research1.csv?token=' + encodeURIComponent(t)
+        $downloadQ1Items.href = '/api/export_research1_items.csv?token=' + encodeURIComponent(t)
         $downloadMerged.href = '/api/export_merged.csv?token=' + encodeURIComponent(t)
       }
       $token.value = (localStorage.getItem(key) || '')
@@ -1068,6 +1072,39 @@ app.get('/api/export_research1.csv', (req, res) => {
     )
     .all()
     .map((r) => ({ ...r, ...evaluateQuestionnaireQuality(r) }))
+
+  const csv = stringify(rows, { header: true })
+  res.setHeader('content-type', 'text/csv; charset=utf-8')
+  res.send(csv)
+})
+
+/** 研究一：逐题原始作答（长表，每行一题）；与 export_research1.csv 同鉴权 */
+app.get('/api/export_research1_items.csv', (req, res) => {
+  const token = req.query.token
+  if (!process.env.EXPORT_TOKEN || token !== process.env.EXPORT_TOKEN) {
+    return res.status(401).send('unauthorized')
+  }
+
+  const rows = db
+    .prepare(
+      `select
+        a.questionnaire_session_id,
+        a.participant_id,
+        qs.schema_version,
+        qs.completed_at as q1_completed_at,
+        a.scale_id,
+        a.item_id,
+        coalesce(i.item_text, '') as item_text,
+        coalesce(i.reverse_scored, 0) as reverse_scored,
+        a.answer_value,
+        a.created_at as answer_saved_at
+      from questionnaire_answers a
+      join questionnaire_sessions qs on qs.questionnaire_session_id = a.questionnaire_session_id
+      left join questionnaire_items i on i.item_id = a.item_id
+      where qs.completed_at is not null
+      order by qs.started_at asc, a.scale_id asc, a.item_id asc`
+    )
+    .all()
 
   const csv = stringify(rows, { header: true })
   res.setHeader('content-type', 'text/csv; charset=utf-8')
