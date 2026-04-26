@@ -655,18 +655,19 @@ app.get('/admin', (_req, res) => {
         </label>
         <div class="row">
           <button id="save">保存口令</button>
-          <a id="downloadQ2" class="btn" href="#"><button type="button">下载研究二 CSV</button></a>
           <a id="downloadQ1" class="btn" href="#"><button type="button">下载研究一 CSV</button></a>
           <a id="downloadQ1Items" class="btn" href="#"><button type="button">下载研究一逐题 CSV</button></a>
+          <a id="downloadQ2" class="btn" href="#"><button type="button">下载研究二 CSV</button></a>
+          <a id="downloadTrials" class="btn" href="#"><button type="button">下载研究二逐题 CSV</button></a>
           <a id="downloadMerged" class="btn" href="#"><button type="button">下载合并 CSV</button></a>
           <button id="clear" type="button">清除本地口令</button>
         </div>
         <div id="err" class="err" style="display:none"></div>
-        <p style="margin-top:12px" class="hint">研究二被试级导出：/api/export.csv?token=EXPORT_TOKEN</p>
-        <p class="hint">研究一问卷导出：/api/export_research1.csv?token=EXPORT_TOKEN</p>
+        <p style="margin-top:12px" class="hint">研究一问卷导出：/api/export_research1.csv?token=EXPORT_TOKEN</p>
         <p class="hint">研究一逐题原始作答：/api/export_research1_items.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究二被试级导出：/api/export.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究二逐题（trial 级）导出：/api/export_trials.csv?token=EXPORT_TOKEN</p>
         <p class="hint">研究一+研究二合并导出：/api/export_merged.csv?token=EXPORT_TOKEN</p>
-        <p class="hint">trial 级导出：/api/export_trials.csv?token=EXPORT_TOKEN</p>
       </div>
       <div class="card">
         <h1>生成被试邀请链接</h1>
@@ -707,6 +708,7 @@ app.get('/admin', (_req, res) => {
       const $token = document.getElementById('token')
       const $downloadQ2 = document.getElementById('downloadQ2')
       const $downloadQ1 = document.getElementById('downloadQ1')
+      const $downloadTrials = document.getElementById('downloadTrials')
       const $downloadQ1Items = document.getElementById('downloadQ1Items')
       const $downloadMerged = document.getElementById('downloadMerged')
       const $err = document.getElementById('err')
@@ -718,6 +720,7 @@ app.get('/admin', (_req, res) => {
         const t = ($token.value || '').trim()
         $downloadQ2.href = '/api/export.csv?token=' + encodeURIComponent(t)
         $downloadQ1.href = '/api/export_research1.csv?token=' + encodeURIComponent(t)
+        $downloadTrials.href = '/api/export_trials.csv?token=' + encodeURIComponent(t)
         $downloadQ1Items.href = '/api/export_research1_items.csv?token=' + encodeURIComponent(t)
         $downloadMerged.href = '/api/export_merged.csv?token=' + encodeURIComponent(t)
       }
