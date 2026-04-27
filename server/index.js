@@ -78,6 +78,23 @@ function nowIso() {
   return new Date().toISOString()
 }
 
+/**
+ * 兼容两类时间串：
+ * - ISO: 2026-04-27T10:00:00.000Z
+ * - SQLite datetime('now'): 2026-04-27 10:00:00（UTC，无时区标记）
+ */
+function parseStoredTimeToMs(value) {
+  if (!value) return NaN
+  if (value instanceof Date) return value.getTime()
+  const raw = String(value).trim()
+  if (!raw) return NaN
+  // SQLite 默认 UTC 文本没有时区，补上 Z 避免被 JS 当作本地时区。
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)) {
+    return Date.parse(raw.replace(' ', 'T') + 'Z')
+  }
+  return Date.parse(raw)
+}
+
 function clampInt(n, min, max) {
   const x = Number.isFinite(n) ? Math.trunc(n) : NaN
   if (!Number.isFinite(x)) return null
@@ -253,13 +270,14 @@ app.post('/api/q1/session/start', (req, res) => {
     upsertParticipant.run(participantId)
     db.prepare(
       `insert into questionnaire_sessions
-      (questionnaire_session_id, participant_id, schema_version, user_agent, completed_once)
-      values (?, ?, ?, ?, ?)`
+      (questionnaire_session_id, participant_id, schema_version, user_agent, started_at, completed_once)
+      values (?, ?, ?, ?, ?, ?)`
     ).run(
       questionnaireSessionId,
       participantId,
       questionnaireSchema.version,
       parsed.data.userAgent ?? null,
+      nowIso(),
       completedOnce
     )
   })()
@@ -388,10 +406,10 @@ app.post('/api/q1/complete', (req, res) => {
   })
     ? 1
     : 0
-  const durationMs = Math.max(
-    0,
-    Math.round(Date.now() - new Date(session.started_at).getTime())
-  )
+  const startedMs = parseStoredTimeToMs(session.started_at)
+  const durationMs = Number.isFinite(startedMs)
+    ? Math.max(0, Math.round(Date.now() - startedMs))
+    : 0
   const quality = evaluateQuestionnaireQuality({
     attention_passed: attentionPassed,
     missing_count: missingCount,
