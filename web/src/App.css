@@ -75,6 +75,17 @@
   margin-bottom: 12px;
 }
 
+.qualityWarning {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(217, 119, 6, 0.42);
+  background: color-mix(in srgb, rgba(217, 119, 6, 0.14) 75%, var(--bg));
+  color: var(--text-h);
+  line-height: 1.55;
+  text-align: left;
+}
+
 .wechatBanner {
   text-align: left;
   padding: 14px 14px;

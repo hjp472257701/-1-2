@@ -8,7 +8,22 @@ type CrttPlanItem = {
   opponent: null | { intensity: number; durationMs: number }
 }
 
-type Step = 'login' | 'hook' | 'crtt' | 'done'
+type FormalTrialPayload = {
+  trialIndex: number
+  outcome: 'win' | 'loss'
+  participantRtMs: number | null
+  participantIntensity: number
+  participantDurationMs: number
+  opponentIntensity: number | null
+  opponentDurationMs: number | null
+}
+
+type BrowserWindowWithWebkitAudio = Window &
+  typeof globalThis & {
+    webkitAudioContext?: typeof AudioContext
+  }
+
+type Step = 'login' | 'hook' | 'crtt' | 'manipulation' | 'done'
 
 type InviteGate = 'none' | 'loading' | 'ok' | 'error'
 type CrttMode = 'practice' | 'formal'
@@ -24,6 +39,36 @@ const PRACTICE_VALID_RT_MAX_MS = 3000
 const PRACTICE_MIN_VALID_RT_COUNT = 1
 const FEEDBACK_WIN_MS = 2200
 const FEEDBACK_LOSS_MIN_MS = 3200
+const MIN_SELECTION_REVIEW_MS = 800
+const REPEATED_CHOICE_WARNING_COUNT = 5
+const MANIPULATION_ITEMS = [
+  {
+    key: 'unfriendly',
+    text: '我觉得游戏伙伴 B 在任务中对我不太友好。',
+  },
+  {
+    key: 'provoked',
+    text: '我觉得自己在任务中受到了游戏伙伴 B 的挑衅。',
+  },
+  {
+    key: 'punishmentHeavy',
+    text: '我觉得游戏伙伴 B 给我设定的声音惩罚偏重。',
+  },
+  {
+    key: 'angry',
+    text: '我在任务过程中感到生气。',
+  },
+  {
+    key: 'retaliation',
+    text: '我在任务过程中有想反击游戏伙伴 B 的冲动。',
+  },
+] as const
+type ManipulationKey = (typeof MANIPULATION_ITEMS)[number]['key']
+type ManipulationAnswers = Record<ManipulationKey, number | null>
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
 
 function isLikelyMobileAudio(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false
@@ -96,6 +141,25 @@ function App() {
   const [goAt, setGoAt] = useState<number | null>(null)
   const [rtMs, setRtMs] = useState<number | null>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
+  const [trialSaving, setTrialSaving] = useState(false)
+  const [pendingFormalTrial, setPendingFormalTrial] = useState<{
+    payload: FormalTrialPayload
+    nextIndex: number
+  } | null>(null)
+  const [selectionReviewReady, setSelectionReviewReady] = useState(false)
+  const [choiceWarning, setChoiceWarning] = useState<string | null>(null)
+  const [choiceWarningAcknowledgedFor, setChoiceWarningAcknowledgedFor] = useState<string | null>(
+    null
+  )
+  const [formalChoiceHistory, setFormalChoiceHistory] = useState<string[]>([])
+  const [manipulationAnswers, setManipulationAnswers] = useState<ManipulationAnswers>({
+    unfriendly: null,
+    provoked: null,
+    punishmentHeavy: null,
+    angry: null,
+    retaliation: null,
+  })
+  const [manipulationAttempted, setManipulationAttempted] = useState(false)
   const [practiceRtList, setPracticeRtList] = useState<number[]>([])
   const [practicePassResult, setPracticePassResult] = useState<{
     passed: boolean
@@ -110,7 +174,10 @@ function App() {
 
   async function ensureAudioReady() {
     if (!audioRef.current) {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const audioWindow = window as BrowserWindowWithWebkitAudio
+      const AudioCtor = audioWindow.AudioContext || audioWindow.webkitAudioContext
+      if (!AudioCtor) throw new Error('audio_context_unavailable')
+      const ctx = new AudioCtor()
       const master = ctx.createGain()
       master.gain.value = isLikelyMobileAudio() ? 0.38 : 0.22
       master.connect(ctx.destination)
@@ -129,7 +196,10 @@ function App() {
   function syncUnlockAudioOnUserGesture() {
     try {
       if (!audioRef.current) {
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+        const audioWindow = window as BrowserWindowWithWebkitAudio
+        const AudioCtor = audioWindow.AudioContext || audioWindow.webkitAudioContext
+        if (!AudioCtor) return
+        const ctx = new AudioCtor()
         const master = ctx.createGain()
         master.gain.value = isLikelyMobileAudio() ? 0.38 : 0.22
         master.connect(ctx.destination)
@@ -375,6 +445,20 @@ function App() {
     practiceRtListRef.current = practiceRtList
   }, [practiceRtList])
 
+  useEffect(() => {
+    setChoiceWarning(null)
+    setChoiceWarningAcknowledgedFor(null)
+    if (phase !== 'set' || intensity == null || durationSec == null) {
+      setSelectionReviewReady(false)
+      return
+    }
+    setSelectionReviewReady(false)
+    const id = window.setTimeout(() => {
+      setSelectionReviewReady(true)
+    }, MIN_SELECTION_REVIEW_MS)
+    return () => window.clearTimeout(id)
+  }, [phase, intensity, durationSec])
+
   /** 环节一：阅读至少 60 秒；useLayoutEffect 保证首屏即有倒计时 */
   useLayoutEffect(() => {
     if (step !== 'hook') {
@@ -506,16 +590,8 @@ function App() {
     }
   }
 
-  async function submitTrial(payload: {
-    trialIndex: number
-    outcome: 'win' | 'loss'
-    participantRtMs: number | null
-    participantIntensity: number
-    participantDurationMs: number
-    opponentIntensity: number | null
-    opponentDurationMs: number | null
-  }) {
-    if (!sessionId) return
+  async function submitTrial(payload: FormalTrialPayload) {
+    if (!sessionId) throw new Error('missing_session')
     const r = await apiFetch('/api/trial', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -524,15 +600,58 @@ function App() {
     if (!r.ok) throw new Error(`trial_failed_${r.status}`)
   }
 
+  async function submitTrialWithRetry(payload: FormalTrialPayload) {
+    let lastError: unknown = null
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await submitTrial(payload)
+        return
+      } catch (e) {
+        lastError = e
+        await sleep(600 * attempt)
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('trial_failed')
+  }
+
+  async function saveFormalTrialAndAdvance(
+    payload: FormalTrialPayload,
+    nextIndex: number,
+    feedbackHoldMs: number
+  ) {
+    setTrialSaving(true)
+    setPendingFormalTrial({ payload, nextIndex })
+    setError(null)
+    try {
+      await Promise.all([submitTrialWithRetry(payload), sleep(feedbackHoldMs)])
+      setPendingFormalTrial(null)
+      finishAndAdvance(nextIndex)
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? `本轮数据保存失败：${e.message}。请检查网络后点击“重新保存本轮数据”，不要刷新或关闭页面。`
+          : '本轮数据保存失败。请检查网络后点击“重新保存本轮数据”，不要刷新或关闭页面。'
+      )
+    } finally {
+      setTrialSaving(false)
+    }
+  }
+
   async function completeSession() {
     if (!sessionId) return
+    setManipulationAttempted(true)
+    const completeAnswers = Object.values(manipulationAnswers).every((v) => v != null)
+    if (!completeAnswers) {
+      setError('请先完成所有感受题，再提交。')
+      return
+    }
     setBusy(true)
     setError(null)
     try {
       const r = await apiFetch('/api/session/complete', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
+        body: JSON.stringify({ sessionId, manipulation: manipulationAnswers }),
       })
       if (!r.ok) throw new Error(`complete_failed_${r.status}`)
       setStep('done')
@@ -550,8 +669,15 @@ function App() {
     setDurationSec(null)
     setPhase('set')
     setFeedback(null)
+    setTrialSaving(false)
+    setPendingFormalTrial(null)
+    setManipulationAttempted(false)
     setGoAt(null)
     setRtMs(null)
+    setSelectionReviewReady(false)
+    setChoiceWarning(null)
+    setChoiceWarningAcknowledgedFor(null)
+    setFormalChoiceHistory([])
   }
 
   function restartPractice() {
@@ -561,11 +687,16 @@ function App() {
     setDurationSec(null)
     setPhase('set')
     setFeedback(null)
+    setTrialSaving(false)
+    setPendingFormalTrial(null)
     setGoAt(null)
     setRtMs(null)
     setPracticeRtList([])
     practiceRtListRef.current = []
     setPracticePassResult(null)
+    setSelectionReviewReady(false)
+    setChoiceWarning(null)
+    setChoiceWarningAcknowledgedFor(null)
   }
 
   function getCurrentPlan() {
@@ -585,10 +716,16 @@ function App() {
         setPhase('practiceComplete')
         setFeedback(null)
         setGoAt(null)
-        setRtMs(null)
-        return
-      }
-      void completeSession()
+    setRtMs(null)
+    setSelectionReviewReady(false)
+    setChoiceWarning(null)
+    setChoiceWarningAcknowledgedFor(null)
+    return
+  }
+      setStep('manipulation')
+      setFeedback(null)
+      setGoAt(null)
+      setRtMs(null)
       return
     }
     setTrialIndex(nextIndex)
@@ -596,12 +733,35 @@ function App() {
     setDurationSec(null)
     setPhase('set')
     setFeedback(null)
+    setTrialSaving(false)
+    setPendingFormalTrial(null)
     setGoAt(null)
     setRtMs(null)
+    setSelectionReviewReady(false)
+    setChoiceWarning(null)
+    setChoiceWarningAcknowledgedFor(null)
   }
 
   function beginReaction() {
     if (intensity == null || durationSec == null) return
+    if (!selectionReviewReady) return
+    const pDurMs = Math.round(durationSec * 1000)
+    const choiceKey = `${intensity}_${pDurMs}`
+    if (crttMode === 'formal') {
+      const recent = formalChoiceHistory.slice(-(REPEATED_CHOICE_WARNING_COUNT - 1))
+      const wouldReachRepeatedChoice =
+        recent.length === REPEATED_CHOICE_WARNING_COUNT - 1 &&
+        recent.every((choice) => choice === choiceKey)
+      if (wouldReachRepeatedChoice && choiceWarningAcknowledgedFor !== choiceKey) {
+        setChoiceWarning(
+          `你已经连续多轮选择完全相同的惩罚设置。请根据本轮情境认真选择；如果继续固定作答，数据可能会被标记为无效。若这是你的真实选择，请再点击一次开始本轮。`
+        )
+        setChoiceWarningAcknowledgedFor(choiceKey)
+        return
+      }
+    }
+    setChoiceWarning(null)
+    setChoiceWarningAcknowledgedFor(null)
     clearWaitTimers()
     if (audioEnabled) syncUnlockAudioOnUserGesture()
     goReactionHandledRef.current = false
@@ -660,10 +820,10 @@ function App() {
 
     const baseMsg =
       item.outcome === 'loss'
-        ? `这轮你慢了一点，算你输。按游戏规则，你要接受一段声音惩罚：白噪音约 ${oppIntensity} 档响度、${Math.round(
+        ? `这轮你慢了一点，算你输。游戏伙伴 B 在本轮开始前为你设定了声音惩罚：白噪音约 ${oppIntensity} 档响度、${Math.round(
             (oppDur ?? 0) / 100
-          ) / 10} 秒（游戏伙伴 B 在开始前设好的）。`
-        : '这轮你更快，算你赢。这一轮不用接受声音惩罚。'
+          ) / 10} 秒。你现在需要接受这段由游戏伙伴 B 设定的声音惩罚。`
+        : `这轮你更快，算你赢。游戏伙伴 B 将接受你在本轮开始前设定的声音惩罚：${intensity} 档响度、${durationSec} 秒。`
     const msg = crttMode === 'practice' ? `[练习轮次，不计入正式数据] ${baseMsg}` : baseMsg
     setFeedback(msg)
 
@@ -671,23 +831,35 @@ function App() {
       punishmentFeedbackFromUserGesture(oppIntensity, oppDur)
     }
 
-    if (crttMode === 'formal') {
-      void submitTrial({
-        trialIndex,
-        outcome: item.outcome,
-        participantRtMs: rt,
-        participantIntensity: intensity,
-        participantDurationMs: pDurMs,
-        opponentIntensity: oppIntensity,
-        opponentDurationMs: oppDur,
-      }).catch((e) => setError(e instanceof Error ? e.message : 'trial_failed'))
-    }
-
     const feedbackHoldMs =
       item.outcome === 'loss'
         ? Math.max(FEEDBACK_LOSS_MIN_MS, (oppDur ?? 0) + 1600)
         : FEEDBACK_WIN_MS
+
+    if (crttMode === 'formal') {
+      setFormalChoiceHistory((prev) => [...prev, `${intensity}_${pDurMs}`].slice(-12))
+      void saveFormalTrialAndAdvance(
+        {
+          trialIndex,
+          outcome: item.outcome,
+          participantRtMs: rt,
+          participantIntensity: intensity,
+          participantDurationMs: pDurMs,
+          opponentIntensity: oppIntensity,
+          opponentDurationMs: oppDur,
+        },
+        trialIndex + 1,
+        feedbackHoldMs
+      )
+      return
+    }
+
     window.setTimeout(() => finishAndAdvance(trialIndex + 1), feedbackHoldMs)
+  }
+
+  function retryPendingFormalTrial() {
+    if (!pendingFormalTrial || trialSaving) return
+    void saveFormalTrialAndAdvance(pendingFormalTrial.payload, pendingFormalTrial.nextIndex, 0)
   }
 
   useEffect(() => {
@@ -1053,14 +1225,26 @@ function App() {
                 <button
                   className="primary"
                   onClick={beginReaction}
-                  disabled={intensity == null || durationSec == null}
+                  disabled={intensity == null || durationSec == null || !selectionReviewReady}
                 >
-                  选好了，开始这一轮
+                  {intensity != null && durationSec != null && !selectionReviewReady
+                    ? '请先看清本轮选择…'
+                    : '选好了，开始这一轮'}
                 </button>
                 {intensity == null || durationSec == null ? (
                   <p className="muted" style={{ marginTop: 10, textAlign: 'center' }}>
                     请先在上方两个下拉框中各选择一项（无默认响度/时长，须主动选择）。
                   </p>
+                ) : null}
+                {intensity != null && durationSec != null && !selectionReviewReady ? (
+                  <p className="muted" style={{ marginTop: 10, textAlign: 'center' }}>
+                    请确认本轮惩罚响度和时长后再开始。
+                  </p>
+                ) : null}
+                {choiceWarning ? (
+                  <div className="qualityWarning" role="alert">
+                    {choiceWarning}
+                  </div>
                 ) : null}
               </>
             ) : null}
@@ -1099,8 +1283,64 @@ function App() {
             ) : null}
 
             {phase === 'feedback' ? (
-              <div className="feedback">{feedback ?? '…'}</div>
+              <div className="feedback">
+                {feedback ?? '…'}
+                {crttMode === 'formal' && trialSaving ? (
+                  <p className="muted">正在保存本轮数据，请不要刷新或关闭页面…</p>
+                ) : null}
+                {crttMode === 'formal' && pendingFormalTrial && !trialSaving && error ? (
+                  <button type="button" className="primary" onClick={retryPendingFormalTrial}>
+                    重新保存本轮数据
+                  </button>
+                ) : null}
+              </div>
             ) : null}
+          </>
+        ) : null}
+
+        {step === 'manipulation' ? (
+          <>
+            <h1>最后一步：任务感受确认</h1>
+            <p className="muted">
+              请根据你刚才在反应时任务中的真实感受作答。1 = 非常不同意，7 = 非常同意。
+            </p>
+            {MANIPULATION_ITEMS.map((item) => (
+              <label className="field" key={item.key}>
+                <div className="label">{item.text}</div>
+                <select
+                  className={`crttSelect ${
+                    manipulationAttempted && manipulationAnswers[item.key] == null
+                      ? 'fieldErrorInput'
+                      : ''
+                  }`}
+                  value={manipulationAnswers[item.key] ?? ''}
+                  onChange={(e) =>
+                    setManipulationAnswers((prev) => ({
+                      ...prev,
+                      [item.key]: e.target.value === '' ? null : Number(e.target.value),
+                    }))
+                  }
+                >
+                  <option value="">请选择</option>
+                  <option value="1">1 非常不同意</option>
+                  <option value="2">2 不同意</option>
+                  <option value="3">3 有点不同意</option>
+                  <option value="4">4 中立</option>
+                  <option value="5">5 有点同意</option>
+                  <option value="6">6 同意</option>
+                  <option value="7">7 非常同意</option>
+                </select>
+              </label>
+            ))}
+            {error ? <div className="error">出错了：{error}</div> : null}
+            <button
+              type="button"
+              className="primary"
+              disabled={busy}
+              onClick={() => void completeSession()}
+            >
+              {busy ? '提交中…' : '提交并完成研究二'}
+            </button>
           </>
         ) : null}
 

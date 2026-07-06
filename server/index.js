@@ -986,6 +986,12 @@ app.post('/api/trial', (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
 
   const t = parsed.data
+  const session = db
+    .prepare(`select session_id, completed_at from sessions where session_id = ?`)
+    .get(t.sessionId)
+  if (!session) return res.status(404).json({ error: 'session_not_found' })
+  if (session.completed_at) return res.status(409).json({ error: 'session_already_completed' })
+
   const stmt = db.prepare(`
     insert into trials (
       session_id, trial_index, outcome, participant_rt_ms,
@@ -1014,14 +1020,63 @@ app.post('/api/trial', (req, res) => {
 })
 
 app.post('/api/session/complete', (req, res) => {
-  const schema = z.object({ sessionId: z.string().min(6).max(32) })
+  const schema = z.object({
+    sessionId: z.string().min(6).max(32),
+    manipulation: z.object({
+      unfriendly: z.number().int().min(1).max(7),
+      provoked: z.number().int().min(1).max(7),
+      punishmentHeavy: z.number().int().min(1).max(7),
+      angry: z.number().int().min(1).max(7),
+      retaliation: z.number().int().min(1).max(7),
+    }),
+  })
   const parsed = schema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
-  const { sessionId } = parsed.data
+  const { sessionId, manipulation } = parsed.data
+
+  const session = db
+    .prepare(`select session_id, completed_at from sessions where session_id = ?`)
+    .get(sessionId)
+  if (!session) return res.status(404).json({ error: 'session_not_found' })
+  if (session.completed_at) return res.json({ ok: true, alreadyCompleted: true })
+
+  const savedTrialRows = db
+    .prepare(`select trial_index from trials where session_id = ? order by trial_index asc`)
+    .all(sessionId)
+  const savedTrialIndices = new Set(savedTrialRows.map((row) => row.trial_index))
+  const missingTrialNumbers = []
+  for (let i = 0; i < CRTT_TOTAL_TRIALS; i += 1) {
+    if (!savedTrialIndices.has(i)) missingTrialNumbers.push(i + 1)
+  }
+  if (missingTrialNumbers.length > 0) {
+    return res.status(409).json({
+      error: 'incomplete_trials',
+      expectedTrials: CRTT_TOTAL_TRIALS,
+      savedTrials: savedTrialIndices.size,
+      missingTrialNumbers,
+    })
+  }
 
   const r = db
-    .prepare(`update sessions set completed_at = ? where session_id = ?`)
-    .run(nowIso(), sessionId)
+    .prepare(
+      `update sessions
+       set completed_at = ?,
+           manip_unfriendly = ?,
+           manip_provoked = ?,
+           manip_punishment_heavy = ?,
+           manip_angry = ?,
+           manip_retaliation = ?
+       where session_id = ?`
+    )
+    .run(
+      nowIso(),
+      manipulation.unfriendly,
+      manipulation.provoked,
+      manipulation.punishmentHeavy,
+      manipulation.angry,
+      manipulation.retaliation,
+      sessionId
+    )
   if (r.changes === 0) return res.status(404).json({ error: 'session_not_found' })
   res.json({ ok: true })
 })
@@ -1161,6 +1216,11 @@ app.get('/api/export.csv', (req, res) => {
       started_at: s.started_at,
       completed_at: s.completed_at,
       anger_rating: s.anger_rating,
+      manip_unfriendly: s.manip_unfriendly,
+      manip_provoked: s.manip_provoked,
+      manip_punishment_heavy: s.manip_punishment_heavy,
+      manip_angry: s.manip_angry,
+      manip_retaliation: s.manip_retaliation,
       md: s.md,
       cr: s.cr,
       dv1_trial_start: dv.dv1_trial_start,
@@ -1222,6 +1282,11 @@ app.get('/api/export_merged.csv', (req, res) => {
         s.started_at as q2_started_at,
         s.completed_at as q2_completed_at,
         s.anger_rating,
+        s.manip_unfriendly,
+        s.manip_provoked,
+        s.manip_punishment_heavy,
+        s.manip_angry,
+        s.manip_retaliation,
         s.invite_token,
         p.md as md_for_q2,
         p.cr as cr_for_q2
@@ -1344,4 +1409,3 @@ app.listen(PORT, '0.0.0.0', () => {
   // eslint-disable-next-line no-console
   console.log(`CRTT server listening on port ${PORT}`)
 })
-

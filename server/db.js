@@ -131,6 +131,20 @@ try {
 }
 
 for (const col of [
+  'manip_unfriendly integer',
+  'manip_provoked integer',
+  'manip_punishment_heavy integer',
+  'manip_angry integer',
+  'manip_retaliation integer',
+]) {
+  try {
+    db.exec(`alter table sessions add column ${col}`)
+  } catch (e) {
+    if (!/duplicate column name/i.test(String(e.message))) throw e
+  }
+}
+
+for (const col of [
   'prds real',
   'pmd real',
   'aq real',
@@ -156,4 +170,3 @@ for (const col of [
 }
 
 module.exports = { db, DB_PATH }
-
