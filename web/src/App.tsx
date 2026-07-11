@@ -37,8 +37,8 @@ const PRACTICE_PLAN: CrttPlanItem[] = [
 const PRACTICE_VALID_RT_MIN_MS = 100
 const PRACTICE_VALID_RT_MAX_MS = 3000
 const PRACTICE_MIN_VALID_RT_COUNT = 1
-const FEEDBACK_WIN_MS = 2200
-const FEEDBACK_LOSS_MIN_MS = 3200
+const FEEDBACK_WIN_MS = 6000
+const FEEDBACK_LOSS_MIN_MS = 7000
 const MIN_SELECTION_REVIEW_MS = 800
 const REPEATED_CHOICE_WARNING_COUNT = 5
 const MANIPULATION_ITEMS = [
@@ -273,32 +273,14 @@ function App() {
   }
 
   /**
-   * 与惩罚白噪音同时触发。Web Vibration API 无标准「强度」参数，用脉冲长短与间隔疏密近似响度；
-   * 总时长对齐惩罚 duration（有浏览器对 pattern 长度/总时长的上限，故做截断）。
+   * 使用旧版已经设备实测过的简单三段震动。部分移动浏览器会忽略
+   * 过长的 pattern，或只执行紧邻的 vibrate(0) 而取消后续震动。
    */
-  function vibratePunishment(intensity01to10: number, durationMs: number) {
+  function vibratePunishment(durationMs: number) {
     if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return
-    const total = Math.min(5000, Math.max(0, Math.round(durationMs)))
-    if (total <= 0) return
-    const lvl = Math.min(10, Math.max(1, Math.round(intensity01to10)))
-    const pulseMs = Math.round(40 + lvl * 16)
-    const gapMs = Math.max(12, Math.round(100 - lvl * 8))
-    const pattern: number[] = []
-    let used = 0
-    while (used < total && pattern.length < 40) {
-      const vib = Math.min(pulseMs, total - used)
-      if (vib < 1) break
-      pattern.push(vib)
-      used += vib
-      if (used >= total) break
-      const gap = Math.min(gapMs, total - used)
-      if (gap < 1) break
-      pattern.push(gap)
-      used += gap
-    }
+    const dur = Math.min(1200, Math.max(150, Math.round(durationMs / 3)))
     try {
-      navigator.vibrate(0)
-      navigator.vibrate(pattern.length ? pattern : [Math.min(300, total)])
+      navigator.vibrate([180, 120, dur])
     } catch {
       // ignore
     }
@@ -350,6 +332,8 @@ function App() {
    * 并在 resume 完成后再调度白噪音，否则后续多轮会无声。
    */
   function punishmentFeedbackFromUserGesture(intensity: number, durationMs: number) {
+    // 震动与音频解耦：即使 AudioContext 初始化/恢复失败，也要先尝试震动。
+    vibratePunishment(durationMs)
     try {
       syncUnlockAudioOnUserGesture()
       const a = audioRef.current
@@ -368,7 +352,6 @@ function App() {
     } catch {
       // ignore
     }
-    vibratePunishment(intensity, durationMs)
   }
 
   useEffect(() => {
@@ -1134,20 +1117,38 @@ function App() {
                 现在先进行 <strong>{PRACTICE_PLAN.length} 轮练习</strong>，帮助你熟悉操作。练习数据不会进入正式分析。
               </div>
             ) : null}
-            <p className="muted">
-              <strong>每一轮怎么操作（按顺序）：</strong>
-              <br />
-              ① 先在下面用<strong>下拉框</strong>选两项：这是在给游戏伙伴 B 设定<strong>游戏惩罚</strong>——<strong>万一这轮你赢了、他输了</strong>，他要被罚听一段白噪音（像收音机没台时的沙沙声），<strong>多响、响多久</strong>就由这两项决定。
-              <br />
-              ② 点「开始本轮」。
-              <br />
-              ③ 等一会儿，屏幕上会出现大大的「<strong>GO</strong>」，<strong>一看到就马上反应</strong>：<strong>电脑可按空格键</strong>；<strong>手机或平板可点「我按了」或点 GO 区域任意位置</strong>。
-              <br />
-              ④ 谁按得快，谁赢这一轮。<strong>输了的人</strong>要按规则接受对方设好的<strong>声音惩罚</strong>（那段白噪音）；赢了这一轮就不用受罚。
-            </p>
-            <p className="muted">
-              <strong>关于上面两项（都是在设定「惩罚」有多重）：</strong>第一个在 1～10 里选，表示惩罚声音有多响（数字越大越响；大致从轻到很响，约相当于 60～105 分贝那种概念，你这台设备实际多大以你听到的为准）。第二个在 0～5 秒里选（含 0.5 秒一档），表示这个惩罚声音要<strong>持续响多少秒</strong>。<strong>两项越大，这一轮里对方一旦输了，受到的惩罚就越重。</strong>
-            </p>
+            <section className="crttInstructions" aria-labelledby="crtt-instructions-title">
+              <h2 id="crtt-instructions-title">每轮操作步骤</h2>
+              <ol className="crttSteps">
+                <li>
+                  <strong>设定惩罚</strong>
+                  <span>在两个下拉框中选择白噪音的响度和持续时间。如果你赢了，游戏伙伴 B 将接受你设定的惩罚。</span>
+                </li>
+                <li>
+                  <strong>开始本轮</strong>
+                  <span>选好两项后，点击「选好了，开始这一轮」。</span>
+                </li>
+                <li>
+                  <strong>看到 GO 立即反应</strong>
+                  <span>电脑按空格键；手机或平板点击「我按了」，也可点击 GO 区域。</span>
+                </li>
+                <li>
+                  <strong>查看本轮结果</strong>
+                  <span>反应更快的一方获胜；失败的一方接受对方事先设定的白噪音惩罚。</span>
+                </li>
+              </ol>
+
+              <div className="punishmentGuide">
+                <div>
+                  <strong>响度：1～10</strong>
+                  <span>数字越大，惩罚声音越响。设备实际音量以你听到的为准。</span>
+                </div>
+                <div>
+                  <strong>时长：0～5 秒</strong>
+                  <span>每档相差 0.5 秒；数字越大，白噪音持续越久。</span>
+                </div>
+              </div>
+            </section>
 
             <div className="statusRow">
               <div className="pill">
@@ -1283,8 +1284,10 @@ function App() {
             ) : null}
 
             {phase === 'feedback' ? (
-              <div className="feedback">
-                {feedback ?? '…'}
+              <div className="feedback trialFeedback" role="status" aria-live="polite">
+                <strong className="trialFeedbackTitle">本轮结果</strong>
+                <div>{feedback ?? '…'}</div>
+                <p className="trialFeedbackHint">结果将停留数秒，请看清后等待下一轮。</p>
                 {crttMode === 'formal' && trialSaving ? (
                   <p className="muted">正在保存本轮数据，请不要刷新或关闭页面…</p>
                 ) : null}

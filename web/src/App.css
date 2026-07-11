@@ -458,6 +458,103 @@ input[type='range'] {
   transform: scale(0.98);
 }
 
+.crttInstructions {
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+}
+
+.crttInstructions h2 {
+  margin: 0 0 14px;
+  font-size: 19px;
+  line-height: 1.35;
+  color: var(--text-h);
+}
+
+.crttSteps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: crtt-step;
+  display: grid;
+  gap: 12px;
+}
+
+.crttSteps li {
+  counter-increment: crtt-step;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: start;
+}
+
+.crttSteps li::before {
+  content: counter(crtt-step);
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  color: var(--text-h);
+  font-weight: 800;
+}
+
+.crttSteps strong,
+.crttSteps span {
+  grid-column: 2;
+}
+
+.crttSteps strong {
+  color: var(--text-h);
+  line-height: 1.4;
+}
+
+.crttSteps span {
+  margin-top: 2px;
+  color: var(--text-m);
+  line-height: 1.6;
+}
+
+.punishmentGuide {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.punishmentGuide > div {
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--social-bg);
+  display: grid;
+  gap: 5px;
+}
+
+.punishmentGuide strong {
+  color: var(--text-h);
+}
+
+.punishmentGuide span {
+  color: var(--text-m);
+  line-height: 1.55;
+}
+
+@media (max-width: 620px) {
+  .crttInstructions {
+    padding: 15px;
+  }
+
+  .punishmentGuide {
+    grid-template-columns: 1fr;
+  }
+}
+
 .feedback {
   margin-top: 12px;
   padding: 16px;
@@ -470,4 +567,21 @@ input[type='range'] {
   min-height: 88px;
   display: grid;
   align-items: center;
+}
+
+.trialFeedback {
+  align-content: center;
+  gap: 8px;
+  min-height: 150px;
+}
+
+.trialFeedbackTitle {
+  font-size: 19px;
+  color: var(--text-h);
+}
+
+.trialFeedbackHint {
+  margin: 2px 0 0;
+  color: var(--text-m);
+  font-size: 14px;
 }
