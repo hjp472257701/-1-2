@@ -1057,29 +1057,6 @@ app.post('/api/session/complete', (req, res) => {
     })
   }
 
-  const session = db
-    .prepare(`select session_id, completed_at from sessions where session_id = ?`)
-    .get(sessionId)
-  if (!session) return res.status(404).json({ error: 'session_not_found' })
-  if (session.completed_at) return res.json({ ok: true, alreadyCompleted: true })
-
-  const savedTrialRows = db
-    .prepare(`select trial_index from trials where session_id = ? order by trial_index asc`)
-    .all(sessionId)
-  const savedTrialIndices = new Set(savedTrialRows.map((row) => row.trial_index))
-  const missingTrialNumbers = []
-  for (let i = 0; i < CRTT_TOTAL_TRIALS; i += 1) {
-    if (!savedTrialIndices.has(i)) missingTrialNumbers.push(i + 1)
-  }
-  if (missingTrialNumbers.length > 0) {
-    return res.status(409).json({
-      error: 'incomplete_trials',
-      expectedTrials: CRTT_TOTAL_TRIALS,
-      savedTrials: savedTrialIndices.size,
-      missingTrialNumbers,
-    })
-  }
-
   const r = db
     .prepare(
       `update sessions
