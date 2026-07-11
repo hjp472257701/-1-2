@@ -77,6 +77,50 @@ function isLikelyMobileAudio(): boolean {
   return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
 }
 
+function isIOSDevice(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent)
+}
+
+function createPcmWavUrl({
+  durationMs,
+  toneHz,
+  amplitude,
+}: {
+  durationMs: number
+  toneHz?: number
+  amplitude: number
+}) {
+  const sampleRate = 8000
+  const sampleCount = Math.max(1, Math.round((sampleRate * durationMs) / 1000))
+  const buffer = new ArrayBuffer(44 + sampleCount)
+  const view = new DataView(buffer)
+  const writeText = (offset: number, value: string) => {
+    for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i))
+  }
+  writeText(0, 'RIFF')
+  view.setUint32(4, 36 + sampleCount, true)
+  writeText(8, 'WAVE')
+  writeText(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, 1, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate, true)
+  view.setUint16(32, 1, true)
+  view.setUint16(34, 8, true)
+  writeText(36, 'data')
+  view.setUint32(40, sampleCount, true)
+  const amp = Math.min(0.8, Math.max(0.05, amplitude)) * 127
+  for (let i = 0; i < sampleCount; i += 1) {
+    const wave = toneHz
+      ? Math.sin((2 * Math.PI * toneHz * i) / sampleRate)
+      : Math.random() * 2 - 1
+    view.setUint8(44 + i, Math.round(128 + wave * amp))
+  }
+  return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }))
+}
+
 /** 微信内置浏览器：Web Audio 惩罚音常被系统拦截，实验数据可能无效 */
 function isWeChatInApp(): boolean {
   if (typeof navigator === 'undefined') return false
@@ -125,6 +169,8 @@ function App() {
     ctx: AudioContext
     master: GainNode
   } | null>(null)
+  const htmlAudioRef = useRef<HTMLAudioElement | null>(null)
+  const htmlAudioUrlRef = useRef<string | null>(null)
 
   const [hookStartIso, setHookStartIso] = useState<string | null>(null)
   const [anger, setAnger] = useState<number>(5)
@@ -217,11 +263,51 @@ function App() {
     return min + t * (max - min)
   }
 
+  function playIOSAudio({
+    durationMs,
+    toneHz,
+    amplitude,
+  }: {
+    durationMs: number
+    toneHz?: number
+    amplitude: number
+  }) {
+    htmlAudioRef.current?.pause()
+    if (htmlAudioUrlRef.current) URL.revokeObjectURL(htmlAudioUrlRef.current)
+    const url = createPcmWavUrl({ durationMs, toneHz, amplitude })
+    const audio = new Audio(url)
+    audio.setAttribute('playsinline', '')
+    htmlAudioRef.current = audio
+    htmlAudioUrlRef.current = url
+    audio.addEventListener(
+      'ended',
+      () => {
+        if (htmlAudioUrlRef.current === url) {
+          URL.revokeObjectURL(url)
+          htmlAudioUrlRef.current = null
+          htmlAudioRef.current = null
+        }
+      },
+      { once: true }
+    )
+    void audio.play().catch((e) => {
+      setError(e instanceof Error ? e.message : 'html_audio_play_failed')
+    })
+  }
+
   /**
    * iOS 要求创建声音节点、调用 resume 和 start 都发生在同一次用户点击的
    * 同步调用栈中。不能在 await resume() 之后才创建提示音。
    */
   function unlockAudioAndPlayPreview(loud = false) {
+    if (isIOSDevice()) {
+      playIOSAudio({
+        durationMs: loud ? 420 : 260,
+        toneHz: loud ? 660 : 880,
+        amplitude: loud ? 0.62 : 0.42,
+      })
+      return
+    }
     syncUnlockAudioOnUserGesture()
     const a = audioRef.current
     if (!a) throw new Error('audio_context_unavailable')
@@ -334,6 +420,11 @@ function App() {
   function punishmentFeedbackFromUserGesture(intensity: number, durationMs: number) {
     // 震动与音频解耦：即使 AudioContext 初始化/恢复失败，也要先尝试震动。
     vibratePunishment(durationMs)
+    if (isIOSDevice()) {
+      const amplitude = 0.18 + ((Math.min(10, Math.max(1, intensity)) - 1) / 9) * 0.5
+      playIOSAudio({ durationMs: Math.min(5000, durationMs), amplitude })
+      return
+    }
     try {
       syncUnlockAudioOnUserGesture()
       const a = audioRef.current
