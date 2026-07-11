@@ -172,23 +172,6 @@ function App() {
   const [waitRemainingSec, setWaitRemainingSec] = useState<number | null>(null)
   const waitTimersRef = useRef<{ ui?: number; go?: number }>({})
 
-  async function ensureAudioReady() {
-    if (!audioRef.current) {
-      const audioWindow = window as BrowserWindowWithWebkitAudio
-      const AudioCtor = audioWindow.AudioContext || audioWindow.webkitAudioContext
-      if (!AudioCtor) throw new Error('audio_context_unavailable')
-      const ctx = new AudioCtor()
-      const master = ctx.createGain()
-      master.gain.value = isLikelyMobileAudio() ? 0.38 : 0.22
-      master.connect(ctx.destination)
-      audioRef.current = { ctx, master }
-    }
-    if (audioRef.current.ctx.state !== 'running') {
-      await audioRef.current.ctx.resume()
-    }
-    return audioRef.current
-  }
-
   /**
    * 必须在用户手势（click / pointerdown）的同步调用栈里执行，否则 iOS Safari 会保持
    * AudioContext suspended，导致后续惩罚音无声。
@@ -234,11 +217,28 @@ function App() {
     return min + t * (max - min)
   }
 
-  async function enableAudio() {
+  /**
+   * iOS 要求创建声音节点、调用 resume 和 start 都发生在同一次用户点击的
+   * 同步调用栈中。不能在 await resume() 之后才创建提示音。
+   */
+  function unlockAudioAndPlayPreview(loud = false) {
+    syncUnlockAudioOnUserGesture()
+    const a = audioRef.current
+    if (!a) throw new Error('audio_context_unavailable')
+
+    // Context 若仍处于 suspended，声音会先排队，resume 成功后立即播放。
+    playPreviewBeep(loud)
+    const st = a.ctx.state as string
+    if (st === 'suspended' || st === 'interrupted') {
+      void a.ctx.resume().catch((e) => {
+        setError(e instanceof Error ? e.message : 'audio_resume_failed')
+      })
+    }
+  }
+
+  function enableAudio() {
     try {
-      syncUnlockAudioOnUserGesture()
-      await ensureAudioReady()
-      playPreviewBeep()
+      unlockAudioAndPlayPreview(false)
       setAudioEnabled(true)
       setVolumeConfirmed(false)
     } catch (e) {
@@ -988,7 +988,7 @@ function App() {
                 点「启用声音」后会先播放一声短提示音。若仍无声：请调高<strong>媒体音量</strong>；iPhone 请确认<strong>侧静音开关未拨到静音</strong>；尽量用
                 <strong>Safari 或 Chrome</strong> 打开（<strong>微信内置浏览器</strong>常会导致实验页无声，请点右上角「…」用浏览器打开）。
               </p>
-              <button className="secondary" onClick={() => void enableAudio()}>
+              <button type="button" className="secondary" onClick={enableAudio}>
                 {audioEnabled ? '已启用声音' : '启用声音'}
               </button>
               {audioEnabled ? (
@@ -999,10 +999,7 @@ function App() {
                   <button
                     type="button"
                     className="secondary"
-                    onClick={() => {
-                      syncUnlockAudioOnUserGesture()
-                      playPreviewBeep(true)
-                    }}
+                    onClick={() => unlockAudioAndPlayPreview(true)}
                   >
                     大声自检（再播一次较响的提示音）
                   </button>
