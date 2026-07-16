@@ -5,7 +5,7 @@ const { stringify } = require('csv-stringify/sync')
 
 const sessionNanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 12)
 const STUDY_VERSION = String(
-  process.env.ONLINE_POINTS_STUDY_VERSION || 'q2_v4_0_reappraisal_15trial_test1_20260716'
+  process.env.ONLINE_POINTS_STUDY_VERSION || 'q2_v4_1_clear_zero_15trial_test1_20260716'
 ).trim()
 const TOTAL_TRIALS = 15
 const INITIAL_TRIALS = 7
@@ -475,7 +475,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
 
   app.post('/api/online-points/session/preflight', (req, res) => {
     const answerSchema = z.object({
-      zeroMeaning: z.enum(['no_deduction', 'minimum_deduction', 'skip_trial']),
+      zeroMeaning: z.enum(['no_deduction', 'deduct_one', 'skip_trial']),
       winnerTarget: z.enum(['self', 'partner', 'both']),
       loserSource: z.enum(['own_choice', 'partner_choice', 'random']),
       choiceAffectsWin: z.enum(['no', 'yes', 'only_high']),

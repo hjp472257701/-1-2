@@ -54,7 +54,7 @@ async function main() {
       DB_PATH: dbPath,
       PORT: String(port),
       EXPORT_TOKEN: exportToken,
-      ONLINE_POINTS_STUDY_VERSION: 'q2_v4_0_reappraisal_15trial_integration',
+      ONLINE_POINTS_STUDY_VERSION: 'q2_v4_1_clear_zero_15trial_integration',
       ONLINE_POINTS_DEFAULT_DATA_ROLE: 'test',
       ONLINE_POINTS_FORMAL_ENABLED: 'false',
     },
@@ -129,7 +129,7 @@ async function main() {
       sessionId,
       comprehensionHistory: [
         {
-          zeroMeaning: 'minimum_deduction',
+          zeroMeaning: 'deduct_one',
           winnerTarget: 'self',
           loserSource: 'own_choice',
           choiceAffectsWin: 'yes',
@@ -143,7 +143,7 @@ async function main() {
       sessionId,
       comprehensionHistory: [
         {
-          zeroMeaning: 'minimum_deduction',
+          zeroMeaning: 'deduct_one',
           winnerTarget: 'self',
           loserSource: 'own_choice',
           choiceAffectsWin: 'yes',
@@ -446,7 +446,7 @@ async function main() {
     const subjectCsv = await fetch(
       base + '/api/online-points/export.csv?token=' + exportToken
     ).then((response) => response.text())
-    assert.match(subjectCsv, /q2_v4_0_reappraisal_15trial_integration/)
+    assert.match(subjectCsv, /q2_v4_1_clear_zero_15trial_integration/)
     assert.match(subjectCsv, /online-test-001/)
     assert.match(subjectCsv, /174,120/)
     assert.match(subjectCsv, /trial_drafts_json/)

@@ -72,7 +72,7 @@ type SessionState = {
 }
 
 type PreflightAnswer = {
-  zeroMeaning: 'no_deduction' | 'minimum_deduction' | 'skip_trial'
+  zeroMeaning: 'no_deduction' | 'deduct_one' | 'skip_trial'
   winnerTarget: 'self' | 'partner' | 'both'
   loserSource: 'own_choice' | 'partner_choice' | 'random'
   choiceAffectsWin: 'no' | 'yes' | 'only_high'
@@ -876,9 +876,9 @@ function FullStudyApp() {
             </p>
             <SelectField label="1. 选择0分表示什么？" value={zeroMeaning} onChange={(value) => setZeroMeaning(value as PreflightAnswer['zeroMeaning'] | '')}>
               <option value="">请选择</option>
-              <option value="no_deduction">获胜也不扣除对方积分</option>
-              <option value="minimum_deduction">扣除最低积分</option>
-              <option value="skip_trial">跳过本轮</option>
+              <option value="no_deduction">如果获胜，不扣除伙伴B的积分</option>
+              <option value="deduct_one">如果获胜，仍扣除伙伴B 1分</option>
+              <option value="skip_trial">直接跳过本轮，不再比较反应速度</option>
             </SelectField>
             <SelectField label="2. 如果你获胜，选择的分数从谁的账户扣除？" value={winnerTarget} onChange={(value) => setWinnerTarget(value as PreflightAnswer['winnerTarget'] | '')}>
               <option value="">请选择</option>
