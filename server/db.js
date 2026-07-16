@@ -18,6 +18,8 @@ db.exec(`
   create table if not exists sessions (
     session_id text primary key,
     participant_id text not null,
+    study_version text not null default 'q2_v1_legacy',
+    data_role text not null default 'legacy',
     user_agent text,
     hook_read_started_at text,
     hook_read_ended_at text,
@@ -46,6 +48,7 @@ db.exec(`
     token text primary key,
     participant_id text,
     label text,
+    data_role text not null default 'legacy',
     max_uses integer not null default 1,
     use_count integer not null default 0,
     expires_at text,
@@ -136,12 +139,29 @@ for (const col of [
   'manip_punishment_heavy integer',
   'manip_angry integer',
   'manip_retaliation integer',
+  "study_version text not null default 'q2_v1_legacy'",
+  "data_role text not null default 'legacy'",
+  'practice_attempts integer',
+  'practice_valid_rt_count integer',
+  'practice_rt_history_json text',
+  'comprehension_attempts integer',
+  'comprehension_first_pass integer',
+  'comprehension_passed integer',
+  'comprehension_history_json text',
+  'preflight_passed integer',
+  'preflight_completed_at text',
 ]) {
   try {
     db.exec(`alter table sessions add column ${col}`)
   } catch (e) {
     if (!/duplicate column name/i.test(String(e.message))) throw e
   }
+}
+
+try {
+  db.exec(`alter table invites add column data_role text not null default 'legacy'`)
+} catch (e) {
+  if (!/duplicate column name/i.test(String(e.message))) throw e
 }
 
 for (const col of [

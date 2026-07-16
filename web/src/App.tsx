@@ -23,7 +23,7 @@ type BrowserWindowWithWebkitAudio = Window &
     webkitAudioContext?: typeof AudioContext
   }
 
-type Step = 'login' | 'hook' | 'crtt' | 'manipulation' | 'done'
+type Step = 'login' | 'crtt' | 'comprehension' | 'hook' | 'manipulation' | 'done'
 
 type InviteGate = 'none' | 'loading' | 'ok' | 'error'
 type CrttMode = 'practice' | 'formal'
@@ -31,16 +31,27 @@ type CrttMode = 'practice' | 'formal'
 const INTENSITY_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const
 const DURATION_OPTIONS = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5] as const
 const PRACTICE_PLAN: CrttPlanItem[] = [
-  { trialIndex: 0, outcome: 'loss', opponent: { intensity: 4, durationMs: 800 } },
-  { trialIndex: 1, outcome: 'win', opponent: null },
+  { trialIndex: 0, outcome: 'win', opponent: null },
+  { trialIndex: 1, outcome: 'loss', opponent: { intensity: 2, durationMs: 500 } },
+  { trialIndex: 2, outcome: 'win', opponent: null },
 ]
 const PRACTICE_VALID_RT_MIN_MS = 100
 const PRACTICE_VALID_RT_MAX_MS = 3000
-const PRACTICE_MIN_VALID_RT_COUNT = 1
+const PRACTICE_MIN_VALID_RT_COUNT = 2
 const FEEDBACK_WIN_MS = 6000
 const FEEDBACK_LOSS_MIN_MS = 7000
 const MIN_SELECTION_REVIEW_MS = 800
-const REPEATED_CHOICE_WARNING_COUNT = 5
+type DataRole = 'legacy' | 'test' | 'pilot' | 'formal'
+type ComprehensionAnswers = {
+  winnerListener: 'self' | 'partner' | null
+  settingTime: 'before' | 'after' | null
+  goAction: 'press' | 'wait' | null
+}
+type SubmittedComprehensionAnswers = {
+  winnerListener: 'self' | 'partner'
+  settingTime: 'before' | 'after'
+  goAction: 'press' | 'wait'
+}
 const MANIPULATION_ITEMS = [
   {
     key: 'unfriendly',
@@ -161,6 +172,8 @@ function App() {
 
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [plan, setPlan] = useState<CrttPlanItem[] | null>(null)
+  const [studyVersion, setStudyVersion] = useState<string | null>(null)
+  const [dataRole, setDataRole] = useState<DataRole | null>(null)
 
   const [audioEnabled, setAudioEnabled] = useState(false)
   /** 被试确认已将系统媒体音量调到可感知惩罚；网页无法代为检测或强制系统音量 */
@@ -193,11 +206,6 @@ function App() {
     nextIndex: number
   } | null>(null)
   const [selectionReviewReady, setSelectionReviewReady] = useState(false)
-  const [choiceWarning, setChoiceWarning] = useState<string | null>(null)
-  const [choiceWarningAcknowledgedFor, setChoiceWarningAcknowledgedFor] = useState<string | null>(
-    null
-  )
-  const [formalChoiceHistory, setFormalChoiceHistory] = useState<string[]>([])
   const [manipulationAnswers, setManipulationAnswers] = useState<ManipulationAnswers>({
     unfriendly: null,
     provoked: null,
@@ -212,6 +220,16 @@ function App() {
     validCount: number
   } | null>(null)
   const practiceRtListRef = useRef<number[]>([])
+  const [practiceRtHistory, setPracticeRtHistory] = useState<number[][]>([])
+  const practiceRtHistoryRef = useRef<number[][]>([])
+  const [comprehensionAnswers, setComprehensionAnswers] = useState<ComprehensionAnswers>({
+    winnerListener: null,
+    settingTime: null,
+    goAction: null,
+  })
+  const [comprehensionHistory, setComprehensionHistory] = useState<SubmittedComprehensionAnswers[]>([])
+  const [comprehensionMessage, setComprehensionMessage] = useState<string | null>(null)
+  const [comprehensionLocked, setComprehensionLocked] = useState(false)
 
   const goReactionHandledRef = useRef(false)
   const commitGoReactionRef = useRef<() => void>(() => {})
@@ -491,6 +509,7 @@ function App() {
         const data = (await r.json()) as {
           ok?: boolean
           participantId?: string | null
+          dataRole?: DataRole
         }
         if (!data.ok) {
           setInviteGate('error')
@@ -501,6 +520,7 @@ function App() {
           setParticipantId(data.participantId)
           setParticipantIdLocked(true)
         }
+        if (data.dataRole) setDataRole(data.dataRole)
         setInviteGate('ok')
       } catch {
         if (!cancelled) {
@@ -520,8 +540,6 @@ function App() {
   }, [practiceRtList])
 
   useEffect(() => {
-    setChoiceWarning(null)
-    setChoiceWarningAcknowledgedFor(null)
     if (phase !== 'set' || intensity == null || durationSec == null) {
       setSelectionReviewReady(false)
       return
@@ -613,14 +631,34 @@ function App() {
         }),
       })
       if (!r.ok) throw new Error(`start_failed_${r.status}`)
-      const data = (await r.json()) as { sessionId: string; plan: CrttPlanItem[] }
+      const data = (await r.json()) as {
+        sessionId: string
+        plan: CrttPlanItem[]
+        studyVersion: string
+        dataRole: DataRole
+      }
       setSessionId(data.sessionId)
       setPlan(data.plan)
-      setHookCanContinue(false)
-      setHookSecondsLeft(60)
-      setStep('hook')
-      const t = new Date().toISOString()
-      setHookStartIso(t)
+      setStudyVersion(data.studyVersion)
+      setDataRole(data.dataRole)
+      setPracticeRtHistory([])
+      practiceRtHistoryRef.current = []
+      setComprehensionHistory([])
+      setComprehensionAnswers({ winnerListener: null, settingTime: null, goAction: null })
+      setComprehensionMessage(null)
+      setComprehensionLocked(false)
+      setStep('crtt')
+      setCrttMode('practice')
+      setTrialIndex(0)
+      setIntensity(null)
+      setDurationSec(null)
+      setPhase('set')
+      setFeedback(null)
+      setGoAt(null)
+      setRtMs(null)
+      setPracticeRtList([])
+      practiceRtListRef.current = []
+      setPracticePassResult(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'start_failed')
     } finally {
@@ -646,19 +684,69 @@ function App() {
       })
       if (!r.ok) throw new Error(`hook_failed_${r.status}`)
       setStep('crtt')
-      setCrttMode('practice')
-      setTrialIndex(0)
-      setIntensity(null)
-      setDurationSec(null)
-      setPhase('set')
-      setFeedback(null)
-      setGoAt(null)
-      setRtMs(null)
-      setPracticeRtList([])
-      practiceRtListRef.current = []
-      setPracticePassResult(null)
+      beginFormalCrtt()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'hook_failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitComprehension() {
+    if (!sessionId || comprehensionLocked) return
+    if (
+      comprehensionAnswers.winnerListener == null ||
+      comprehensionAnswers.settingTime == null ||
+      comprehensionAnswers.goAction == null
+    ) {
+      setComprehensionMessage('请先回答全部3道规则题。')
+      return
+    }
+    const submitted: SubmittedComprehensionAnswers = {
+      winnerListener: comprehensionAnswers.winnerListener,
+      settingTime: comprehensionAnswers.settingTime,
+      goAction: comprehensionAnswers.goAction,
+    }
+    const nextHistory = [...comprehensionHistory, submitted]
+    setBusy(true)
+    setError(null)
+    setComprehensionMessage(null)
+    try {
+      const r = await apiFetch('/api/session/preflight', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          practiceRtHistory: practiceRtHistoryRef.current,
+          comprehensionHistory: nextHistory,
+        }),
+      })
+      if (!r.ok) throw new Error(`preflight_failed_${r.status}`)
+      const result = (await r.json()) as {
+        gatePassed: boolean
+        comprehensionPassed: boolean
+        comprehensionAttempts: number
+      }
+      setComprehensionHistory(nextHistory)
+      if (result.gatePassed) {
+        setHookCanContinue(false)
+        setHookSecondsLeft(60)
+        setHookStartIso(new Date().toISOString())
+        setStep('hook')
+        return
+      }
+      if (result.comprehensionAttempts >= 3) {
+        setComprehensionLocked(true)
+        setComprehensionMessage(
+          '连续3次未通过规则确认，本次不进入正式任务。请停止作答并联系现场研究人员。'
+        )
+        return
+      }
+      setComprehensionMessage(
+        '还没有完全理解。请记住：每轮开始前先设置；如果你赢了，游戏伙伴B接受你的设置；看到GO后立即按键。请重新作答。'
+      )
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'preflight_failed')
     } finally {
       setBusy(false)
     }
@@ -749,9 +837,6 @@ function App() {
     setGoAt(null)
     setRtMs(null)
     setSelectionReviewReady(false)
-    setChoiceWarning(null)
-    setChoiceWarningAcknowledgedFor(null)
-    setFormalChoiceHistory([])
   }
 
   function restartPractice() {
@@ -769,8 +854,6 @@ function App() {
     practiceRtListRef.current = []
     setPracticePassResult(null)
     setSelectionReviewReady(false)
-    setChoiceWarning(null)
-    setChoiceWarningAcknowledgedFor(null)
   }
 
   function getCurrentPlan() {
@@ -782,6 +865,10 @@ function App() {
     if (!currentPlan) return
     if (nextIndex >= currentPlan.length) {
       if (crttMode === 'practice') {
+        const completedAttempt = [...practiceRtListRef.current]
+        const nextHistory = [...practiceRtHistoryRef.current, completedAttempt]
+        practiceRtHistoryRef.current = nextHistory
+        setPracticeRtHistory(nextHistory)
         const validCount = practiceRtListRef.current.filter(
           (rt) => rt >= PRACTICE_VALID_RT_MIN_MS && rt <= PRACTICE_VALID_RT_MAX_MS
         ).length
@@ -790,12 +877,10 @@ function App() {
         setPhase('practiceComplete')
         setFeedback(null)
         setGoAt(null)
-    setRtMs(null)
-    setSelectionReviewReady(false)
-    setChoiceWarning(null)
-    setChoiceWarningAcknowledgedFor(null)
-    return
-  }
+        setRtMs(null)
+        setSelectionReviewReady(false)
+        return
+      }
       setStep('manipulation')
       setFeedback(null)
       setGoAt(null)
@@ -812,30 +897,11 @@ function App() {
     setGoAt(null)
     setRtMs(null)
     setSelectionReviewReady(false)
-    setChoiceWarning(null)
-    setChoiceWarningAcknowledgedFor(null)
   }
 
   function beginReaction() {
     if (intensity == null || durationSec == null) return
     if (!selectionReviewReady) return
-    const pDurMs = Math.round(durationSec * 1000)
-    const choiceKey = `${intensity}_${pDurMs}`
-    if (crttMode === 'formal') {
-      const recent = formalChoiceHistory.slice(-(REPEATED_CHOICE_WARNING_COUNT - 1))
-      const wouldReachRepeatedChoice =
-        recent.length === REPEATED_CHOICE_WARNING_COUNT - 1 &&
-        recent.every((choice) => choice === choiceKey)
-      if (wouldReachRepeatedChoice && choiceWarningAcknowledgedFor !== choiceKey) {
-        setChoiceWarning(
-          `你已经连续多轮选择完全相同的惩罚设置。请根据本轮情境认真选择；如果继续固定作答，数据可能会被标记为无效。若这是你的真实选择，请再点击一次开始本轮。`
-        )
-        setChoiceWarningAcknowledgedFor(choiceKey)
-        return
-      }
-    }
-    setChoiceWarning(null)
-    setChoiceWarningAcknowledgedFor(null)
     clearWaitTimers()
     if (audioEnabled) syncUnlockAudioOnUserGesture()
     goReactionHandledRef.current = false
@@ -892,13 +958,17 @@ function App() {
     const oppIntensity = opp ? opp.intensity : null
     const oppDur = opp ? opp.durationMs : null
 
-    const baseMsg =
+    const formalMsg =
       item.outcome === 'loss'
         ? `这轮你慢了一点，算你输。游戏伙伴 B 在本轮开始前为你设定了声音惩罚：白噪音约 ${oppIntensity} 档响度、${Math.round(
             (oppDur ?? 0) / 100
           ) / 10} 秒。你现在需要接受这段由游戏伙伴 B 设定的声音惩罚。`
         : `这轮你更快，算你赢。游戏伙伴 B 将接受你在本轮开始前设定的声音惩罚：${intensity} 档响度、${durationSec} 秒。`
-    const msg = crttMode === 'practice' ? `[练习轮次，不计入正式数据] ${baseMsg}` : baseMsg
+    const practiceMsg =
+      item.outcome === 'loss'
+        ? `训练系统判定本轮为失败，并播放一段轻微示范音。这里只是学习操作，不是正式对手的选择。`
+        : `训练系统判定本轮为成功。你刚才设置的响度和时长只用于练习，不会给正式对手。`
+    const msg = crttMode === 'practice' ? `[中性练习，不计入正式数据] ${practiceMsg}` : formalMsg
     setFeedback(msg)
 
     if (item.outcome === 'loss' && audioEnabled && oppIntensity != null && oppDur != null) {
@@ -911,7 +981,6 @@ function App() {
         : FEEDBACK_WIN_MS
 
     if (crttMode === 'formal') {
-      setFormalChoiceHistory((prev) => [...prev, `${intensity}_${pDurMs}`].slice(-12))
       void saveFormalTrialAndAdvance(
         {
           trialIndex,
@@ -980,6 +1049,11 @@ function App() {
 
       <main className={step === 'login' ? 'card loginForm' : 'card'}>
         {error ? <div className="error">出错了：{error}</div> : null}
+        {dataRole && dataRole !== 'formal' && dataRole !== 'legacy' ? (
+          <div className="feedback" role="status">
+            当前为{dataRole === 'test' ? '技术测试' : '预实验'}数据（{studyVersion ?? 'V2'}），不会自动计入正式主分析。
+          </div>
+        ) : null}
         {isWeChatInApp() ? (
           <div className="wechatBanner">
             <strong>当前是微信内置浏览器</strong>
@@ -1128,6 +1202,81 @@ function App() {
           </>
         ) : null}
 
+        {step === 'comprehension' ? (
+          <>
+            <h1>规则确认</h1>
+            <p className="muted">
+              请根据刚才的中性练习回答。全部答对后，才会进入情境阅读和正式任务。
+            </p>
+            <label className="field">
+              <div className="label">1. 如果你在正式比赛中获胜，谁接受你提前设置的声音？</div>
+              <select
+                className="crttSelect"
+                value={comprehensionAnswers.winnerListener ?? ''}
+                disabled={comprehensionLocked}
+                onChange={(e) =>
+                  setComprehensionAnswers((prev) => ({
+                    ...prev,
+                    winnerListener: (e.target.value || null) as 'self' | 'partner' | null,
+                  }))
+                }
+              >
+                <option value="">请选择</option>
+                <option value="self">我自己</option>
+                <option value="partner">游戏伙伴B</option>
+              </select>
+            </label>
+            <label className="field">
+              <div className="label">2. 每轮的声音响度和时长在什么时候设置？</div>
+              <select
+                className="crttSelect"
+                value={comprehensionAnswers.settingTime ?? ''}
+                disabled={comprehensionLocked}
+                onChange={(e) =>
+                  setComprehensionAnswers((prev) => ({
+                    ...prev,
+                    settingTime: (e.target.value || null) as 'before' | 'after' | null,
+                  }))
+                }
+              >
+                <option value="">请选择</option>
+                <option value="before">看到GO并比赛之前</option>
+                <option value="after">看到输赢结果之后</option>
+              </select>
+            </label>
+            <label className="field">
+              <div className="label">3. 看到“GO”以后应该怎么做？</div>
+              <select
+                className="crttSelect"
+                value={comprehensionAnswers.goAction ?? ''}
+                disabled={comprehensionLocked}
+                onChange={(e) =>
+                  setComprehensionAnswers((prev) => ({
+                    ...prev,
+                    goAction: (e.target.value || null) as 'press' | 'wait' | null,
+                  }))
+                }
+              >
+                <option value="">请选择</option>
+                <option value="press">立即按空格键或点击按钮</option>
+                <option value="wait">继续等待结果，不需要操作</option>
+              </select>
+            </label>
+            {comprehensionMessage ? (
+              <div className={comprehensionLocked ? 'error' : 'feedback'}>{comprehensionMessage}</div>
+            ) : null}
+            <p className="muted">已提交规则确认：{comprehensionHistory.length}/3 次。</p>
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || comprehensionLocked}
+              onClick={() => void submitComprehension()}
+            >
+              {busy ? '正在保存…' : comprehensionLocked ? '本次规则确认未通过' : '提交规则确认'}
+            </button>
+          </>
+        ) : null}
+
         {step === 'hook' ? (
           <>
             <h1>环节一：阅读</h1>
@@ -1196,13 +1345,18 @@ function App() {
 
         {step === 'crtt' ? (
           <>
-            <h1>环节二：反应时</h1>
+            <h1>{crttMode === 'practice' ? '开始前：中性操作练习' : '环节二：正式反应时任务'}</h1>
             <p className="muted">
-              这一环节一共 <strong>25 轮</strong>，每轮你和 <strong>游戏伙伴 B</strong> 比<strong>谁反应更快</strong>。
+              {crttMode === 'practice' ? (
+                <>练习只用于学习操作，由训练系统提供反馈，不是与游戏伙伴B的正式比赛。</>
+              ) : (
+                <>这一环节一共 <strong>25 轮</strong>，每轮你和 <strong>游戏伙伴 B</strong> 比<strong>谁反应更快</strong>。</>
+              )}
             </p>
             {crttMode === 'practice' ? (
               <div className="feedback">
-                现在先进行 <strong>{PRACTICE_PLAN.length} 轮练习</strong>，帮助你熟悉操作。练习数据不会进入正式分析。
+                现在先进行 <strong>{PRACTICE_PLAN.length} 轮练习</strong>。至少2轮反应时间在100—3000毫秒，才能进入规则确认。练习数据不会进入正式分析。
+                当前是第 {practiceRtHistory.length + 1} 次练习尝试。
               </div>
             ) : null}
             <section className="crttInstructions" aria-labelledby="crtt-instructions-title">
@@ -1210,7 +1364,10 @@ function App() {
               <ol className="crttSteps">
                 <li>
                   <strong>设定惩罚</strong>
-                  <span>在两个下拉框中选择白噪音的响度和持续时间。如果你赢了，游戏伙伴 B 将接受你设定的惩罚。</span>
+                  <span>
+                    在两个下拉框中选择白噪音的响度和持续时间。
+                    {crttMode === 'practice' ? '练习选择只用于熟悉界面。' : '如果你赢了，游戏伙伴B将接受你设定的惩罚。'}
+                  </span>
                 </li>
                 <li>
                   <strong>开始本轮</strong>
@@ -1222,7 +1379,11 @@ function App() {
                 </li>
                 <li>
                   <strong>查看本轮结果</strong>
-                  <span>反应更快的一方获胜；失败的一方接受对方事先设定的白噪音惩罚。</span>
+                  <span>
+                    {crttMode === 'practice'
+                      ? '训练系统显示示范结果；练习不会影响正式任务。'
+                      : '反应更快的一方获胜；失败的一方接受对方事先设定的白噪音惩罚。'}
+                  </span>
                 </li>
               </ol>
 
@@ -1251,11 +1412,10 @@ function App() {
                 {practicePassResult?.passed ? (
                   <>
                     <div className="feedback">
-                      练习通过（有效反应 {practicePassResult.validCount}/{PRACTICE_PLAN.length} 轮）。你已经熟悉操作，点击下方按钮后将进入正式任务（共{' '}
-                      {plan?.length ?? 25} 轮）。
+                      练习通过（有效反应 {practicePassResult.validCount}/{PRACTICE_PLAN.length} 轮）。下一步需要回答3道规则确认题；通过后再阅读情境并进入正式任务。
                     </div>
-                    <button className="primary" onClick={beginFormalCrtt}>
-                      进入正式任务
+                    <button className="primary" onClick={() => setStep('comprehension')}>
+                      进入规则确认
                     </button>
                   </>
                 ) : (
@@ -1263,7 +1423,7 @@ function App() {
                     <div className="error">
                       练习未通过：有效反应仅 {practicePassResult?.validCount ?? 0}/
                       {PRACTICE_PLAN.length} 轮。有效反应标准为 {PRACTICE_VALID_RT_MIN_MS}-
-                      {PRACTICE_VALID_RT_MAX_MS} 毫秒，请重做练习后再进入正式任务。
+                      {PRACTICE_VALID_RT_MAX_MS} 毫秒，请重做练习。
                     </div>
                     <button className="primary" onClick={restartPractice}>
                       重新进行练习
@@ -1329,11 +1489,6 @@ function App() {
                   <p className="muted" style={{ marginTop: 10, textAlign: 'center' }}>
                     请确认本轮惩罚响度和时长后再开始。
                   </p>
-                ) : null}
-                {choiceWarning ? (
-                  <div className="qualityWarning" role="alert">
-                    {choiceWarning}
-                  </div>
                 ) : null}
               </>
             ) : null}
@@ -1438,7 +1593,16 @@ function App() {
         {step === 'done' ? (
           <>
             <h1>研究二已完成</h1>
-            <p className="muted">谢谢你的参与，实验任务到这里就结束了，可以把网页关掉。</p>
+            <p className="muted">谢谢你的参与，实验任务到这里就结束了。</p>
+            <div className="script">
+              <p>
+                <strong>任务说明：</strong>为保证每位参与者经历相同情境，任务中的游戏伙伴、输赢结果和对方声音设置均由程序预先安排，并非与真人实时对战。事前没有完整说明这一点，是为了避免影响你在任务中的自然选择。
+              </p>
+              <p>
+                研究只分析标准化任务中的行为指标，不会把单次选择等同于现实生活中的攻击行为。如对此说明有疑问或希望撤回本次数据，请联系研究组织者并提供你的被试编号。
+              </p>
+            </div>
+            <p className="muted">你现在可以关闭网页。</p>
           </>
         ) : null}
       </main>

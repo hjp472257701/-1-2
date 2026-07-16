@@ -8,6 +8,8 @@
     "start": "npm --prefix server run start",
     "build": "npm ci --prefix web && npm run build --prefix web && npm ci --prefix server",
     "ci": "npm --prefix web ci && npm --prefix web run build",
+    "test:v2": "node server/v2.integration.test.js",
+    "test:online-points": "node server/onlinePoints.integration.test.js",
     "publish:github": "bash scripts/publish-github.sh",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

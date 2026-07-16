@@ -9,12 +9,23 @@ const { stringify } = require('csv-stringify/sync')
 
 const { db } = require('./db')
 const { questionnaireSchema, getAllScaleItems } = require('./questionnaireSchema')
+const { registerOnlinePointsRoutes } = require('./onlinePoints')
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 12)
 const inviteNanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 18)
 const questionnaireNanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 12)
 const CRTT_TOTAL_TRIALS = 25
 const CRTT_BASELINE_TRIALS = 5
+const STUDY_VERSION = String(process.env.STUDY_VERSION || 'q2_v2_20260713').trim()
+const DATA_ROLES = ['legacy', 'test', 'pilot', 'formal']
+const DEFAULT_DATA_ROLE = DATA_ROLES.includes(process.env.DEFAULT_DATA_ROLE)
+  ? process.env.DEFAULT_DATA_ROLE
+  : 'test'
+const COMPREHENSION_CORRECT = {
+  winnerListener: 'partner',
+  settingTime: 'before',
+  goAction: 'press',
+}
 const Q1_REQUIRED_ITEM_COUNT = getAllScaleItems().length
 const Q1_MAX_MISSING_RECOMMENDED = Math.floor(Q1_REQUIRED_ITEM_COUNT * 0.2)
 const Q1_MIN_DURATION_MS_RECOMMENDED = 3 * 60 * 1000
@@ -55,6 +66,7 @@ function inviteExpiredRow(row) {
 
 function inviteSelectable(row) {
   if (!row) return { ok: false, code: 'not_found' }
+  if (row.data_role === 'legacy') return { ok: false, code: 'legacy' }
   if (inviteExpiredRow(row)) return { ok: false, code: 'expired' }
   if (row.use_count >= row.max_uses) return { ok: false, code: 'exhausted' }
   return { ok: true }
@@ -73,6 +85,7 @@ app.use(
   })
 )
 syncQuestionnaireItems()
+registerOnlinePointsRoutes({ app, db, nowIso })
 
 function nowIso() {
   return new Date().toISOString()
@@ -574,6 +587,7 @@ app.get('/api/invite/:token', (req, res) => {
     participantId: row.participant_id || null,
     locked: Boolean(row.participant_id),
     label: row.label || null,
+    dataRole: row.data_role || 'legacy',
   })
 })
 
@@ -583,13 +597,14 @@ app.post('/api/admin/invites', (req, res) => {
   const schema = z.object({
     participantId: z.string().min(1).max(64).optional().nullable(),
     label: z.string().max(120).optional().nullable(),
+    dataRole: z.enum(['test', 'pilot', 'formal']).optional(),
     maxUses: z.number().int().min(1).max(100).optional(),
     expiresInDays: z.number().int().min(1).max(3650).optional().nullable(),
   })
   const parsed = schema.safeParse(req.body || {})
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
 
-  let { participantId, label, maxUses, expiresInDays } = parsed.data
+  let { participantId, label, dataRole, maxUses, expiresInDays } = parsed.data
   if (participantId != null && String(participantId).trim() === '') participantId = null
   const pid = participantId != null ? String(participantId).trim() : null
 
@@ -606,12 +621,13 @@ app.post('/api/admin/invites', (req, res) => {
   }
 
   db.prepare(
-    `insert into invites (token, participant_id, label, max_uses, use_count, expires_at)
-     values (@token, @participant_id, @label, @max_uses, 0, @expires_at)`
+    `insert into invites (token, participant_id, label, data_role, max_uses, use_count, expires_at)
+     values (@token, @participant_id, @label, @data_role, @max_uses, 0, @expires_at)`
   ).run({
     token,
     participant_id: pid,
     label: label != null ? String(label).trim() || null : null,
+    data_role: dataRole || 'test',
     max_uses: maxUses ?? 1,
     expires_at: expiresAt,
   })
@@ -620,7 +636,7 @@ app.post('/api/admin/invites', (req, res) => {
   const base = (process.env.PUBLIC_WEB_URL || '').replace(/\/$/, '')
   const fullUrl = base ? `${base}${path}` : null
 
-  res.json({ ok: true, token, path, fullUrl })
+  res.json({ ok: true, token, path, fullUrl, studyVersion: STUDY_VERSION, dataRole: dataRole || 'test' })
 })
 
 app.get('/admin', (_req, res) => {
@@ -642,7 +658,7 @@ app.get('/admin', (_req, res) => {
       h1 { margin: 0 0 8px; font-size: 20px; }
       p { margin: 0 0 12px; opacity: 0.85; line-height: 1.5; }
       label { display: grid; gap: 6px; margin: 10px 0 12px; }
-      input { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(120,120,140,0.35); background: rgba(0,0,0,0.04); }
+      input, select { padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(120,120,140,0.35); background: rgba(0,0,0,0.04); }
       button { padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(120,120,140,0.35); background: rgba(140,90,255,0.12); cursor: pointer; font-weight: 650; }
       .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
       a.btn { text-decoration: none; color: inherit; }
@@ -675,16 +691,20 @@ app.get('/admin', (_req, res) => {
           <button id="save">保存口令</button>
           <a id="downloadQ1" class="btn" href="#"><button type="button">下载研究一 CSV</button></a>
           <a id="downloadQ1Items" class="btn" href="#"><button type="button">下载研究一逐题 CSV</button></a>
-          <a id="downloadQ2" class="btn" href="#"><button type="button">下载研究二 CSV</button></a>
-          <a id="downloadTrials" class="btn" href="#"><button type="button">下载研究二逐题 CSV</button></a>
+          <a id="downloadQ2" class="btn" href="#"><button type="button">下载研究二（原）CSV</button></a>
+          <a id="downloadTrials" class="btn" href="#"><button type="button">下载研究二（原）逐轮 CSV</button></a>
+          <a id="downloadQ2New" class="btn" href="#"><button type="button">下载研究二（新）CSV</button></a>
+          <a id="downloadTrialsNew" class="btn" href="#"><button type="button">下载研究二（新）逐轮 CSV</button></a>
           <a id="downloadMerged" class="btn" href="#"><button type="button">下载合并 CSV</button></a>
           <button id="clear" type="button">清除本地口令</button>
         </div>
         <div id="err" class="err" style="display:none"></div>
         <p style="margin-top:12px" class="hint">研究一问卷导出：/api/export_research1.csv?token=EXPORT_TOKEN</p>
         <p class="hint">研究一逐题原始作答：/api/export_research1_items.csv?token=EXPORT_TOKEN</p>
-        <p class="hint">研究二被试级导出：/api/export.csv?token=EXPORT_TOKEN</p>
-        <p class="hint">研究二逐题（trial 级）导出：/api/export_trials.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究二（原）被试级导出：/api/export.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究二（原）逐轮导出：/api/export_trials.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究二（新）被试级导出：/api/online-points/export.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究二（新）逐轮导出：/api/online-points/export_trials.csv?token=EXPORT_TOKEN</p>
         <p class="hint">研究一+研究二合并导出：/api/export_merged.csv?token=EXPORT_TOKEN</p>
       </div>
       <div class="card">
@@ -701,6 +721,14 @@ app.get('/admin', (_req, res) => {
         <label>
           <div>备注（可选，仅用于后台记录）</div>
           <input id="invLabel" placeholder="例如：批次 A / 预实验" />
+        </label>
+        <label>
+          <div>数据角色（按当前用途选择）</div>
+          <select id="dataRole">
+            <option value="test" selected>技术测试 test（不进入正式分析）</option>
+            <option value="pilot">预实验 pilot</option>
+            <option value="formal">正式数据 formal</option>
+          </select>
         </label>
         <div class="row">
           <label style="flex:1;min-width:160px">
@@ -727,6 +755,8 @@ app.get('/admin', (_req, res) => {
       const $downloadQ2 = document.getElementById('downloadQ2')
       const $downloadQ1 = document.getElementById('downloadQ1')
       const $downloadTrials = document.getElementById('downloadTrials')
+      const $downloadQ2New = document.getElementById('downloadQ2New')
+      const $downloadTrialsNew = document.getElementById('downloadTrialsNew')
       const $downloadQ1Items = document.getElementById('downloadQ1Items')
       const $downloadMerged = document.getElementById('downloadMerged')
       const $err = document.getElementById('err')
@@ -739,6 +769,8 @@ app.get('/admin', (_req, res) => {
         $downloadQ2.href = '/api/export.csv?token=' + encodeURIComponent(t)
         $downloadQ1.href = '/api/export_research1.csv?token=' + encodeURIComponent(t)
         $downloadTrials.href = '/api/export_trials.csv?token=' + encodeURIComponent(t)
+        $downloadQ2New.href = '/api/online-points/export.csv?token=' + encodeURIComponent(t)
+        $downloadTrialsNew.href = '/api/online-points/export_trials.csv?token=' + encodeURIComponent(t)
         $downloadQ1Items.href = '/api/export_research1_items.csv?token=' + encodeURIComponent(t)
         $downloadMerged.href = '/api/export_merged.csv?token=' + encodeURIComponent(t)
       }
@@ -774,12 +806,16 @@ app.get('/admin', (_req, res) => {
       }
       bindDownloadPreflight($downloadQ2)
       bindDownloadPreflight($downloadQ1)
+      bindDownloadPreflight($downloadTrials)
+      bindDownloadPreflight($downloadQ2New)
+      bindDownloadPreflight($downloadTrialsNew)
       bindDownloadPreflight($downloadMerged)
 
       const webKey = 'crtt_public_web_url'
       const $webBase = document.getElementById('webBase')
       const $invPid = document.getElementById('invPid')
       const $invLabel = document.getElementById('invLabel')
+      const $dataRole = document.getElementById('dataRole')
       const $maxUses = document.getElementById('maxUses')
       const $expDays = document.getElementById('expDays')
       const $inviteOut = document.getElementById('inviteOut')
@@ -812,6 +848,7 @@ app.get('/admin', (_req, res) => {
               exportToken,
               participantId: ($invPid.value || '').trim() || null,
               label: ($invLabel.value || '').trim() || null,
+              dataRole: $dataRole.value,
               maxUses,
               expiresInDays,
             }),
@@ -827,7 +864,7 @@ app.get('/admin', (_req, res) => {
             ? (lastInviteUrl + '\\n\\n相对路径：' + data.path)
             : ('请填写「前端公网地址」后复制；相对路径：' + data.path)
           $inviteOut.style.display = 'block'
-          $inviteOut.value = lines
+          $inviteOut.value = '版本：' + (data.studyVersion || '未知') + '；数据角色：' + (data.dataRole || '未知') + '\\n' + lines
           $copyInvite.disabled = !lastInviteUrl
         } catch (err) {
           setInviteErr('生成失败：网络错误')
@@ -859,6 +896,7 @@ app.post('/api/session/start', (req, res) => {
 
   const { participantId, md, cr, userAgent, inviteToken } = parsed.data
   const sessionId = nanoid()
+  let sessionDataRole = DEFAULT_DATA_ROLE
 
   const upsertParticipant = db.prepare(`
     insert into participants (participant_id, md, cr)
@@ -868,8 +906,9 @@ app.post('/api/session/start', (req, res) => {
       cr = coalesce(excluded.cr, participants.cr)
   `)
   const insertSession = db.prepare(
-    `insert into sessions (session_id, participant_id, user_agent, invite_token)
-     values (?, ?, ?, ?)`
+    `insert into sessions (
+       session_id, participant_id, study_version, data_role, user_agent, invite_token
+     ) values (?, ?, ?, ?, ?, ?)`
   )
   const bumpInvite = db.prepare(`
     update invites set use_count = use_count + 1
@@ -891,6 +930,7 @@ app.post('/api/session/start', (req, res) => {
           err.code = 'participant_mismatch'
           throw err
         }
+        sessionDataRole = DATA_ROLES.includes(inv.data_role) ? inv.data_role : 'legacy'
         const u = bumpInvite.run(inviteToken)
         if (u.changes !== 1) {
           const err = new Error('invite_exhausted')
@@ -900,12 +940,20 @@ app.post('/api/session/start', (req, res) => {
       }
 
       upsertParticipant.run({ participant_id: participantId, md: md ?? null, cr: cr ?? null })
-      insertSession.run(sessionId, participantId, userAgent ?? null, inviteToken ?? null)
+      insertSession.run(
+        sessionId,
+        participantId,
+        STUDY_VERSION,
+        sessionDataRole,
+        userAgent ?? null,
+        inviteToken ?? null
+      )
     })()
   } catch (e) {
     const code = e && e.code
     if (code === 'not_found') return res.status(404).json({ error: 'invite_not_found' })
     if (code === 'expired') return res.status(410).json({ error: 'invite_expired' })
+    if (code === 'legacy') return res.status(410).json({ error: 'invite_legacy' })
     if (code === 'exhausted' || code === 'invite_exhausted') {
       return res.status(410).json({ error: 'invite_exhausted' })
     }
@@ -914,7 +962,78 @@ app.post('/api/session/start', (req, res) => {
   }
 
   const plan = generateCrttPlan({ trials: CRTT_TOTAL_TRIALS })
-  res.json({ sessionId, plan })
+  res.json({ sessionId, plan, studyVersion: STUDY_VERSION, dataRole: sessionDataRole })
+})
+
+app.post('/api/session/preflight', (req, res) => {
+  const comprehensionAnswerSchema = z.object({
+    winnerListener: z.enum(['self', 'partner']),
+    settingTime: z.enum(['before', 'after']),
+    goAction: z.enum(['press', 'wait']),
+  })
+  const schema = z.object({
+    sessionId: z.string().min(6).max(32),
+    practiceRtHistory: z.array(z.array(z.number().int().min(0).max(10000)).length(3)).min(1).max(10),
+    comprehensionHistory: z.array(comprehensionAnswerSchema).min(1).max(3),
+  })
+  const parsed = schema.safeParse(req.body || {})
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
+
+  const { sessionId, practiceRtHistory, comprehensionHistory } = parsed.data
+  const session = db
+    .prepare(`select session_id, completed_at from sessions where session_id = ?`)
+    .get(sessionId)
+  if (!session) return res.status(404).json({ error: 'session_not_found' })
+  if (session.completed_at) return res.status(409).json({ error: 'session_already_completed' })
+
+  const finalPractice = practiceRtHistory[practiceRtHistory.length - 1]
+  const practiceValidCount = finalPractice.filter(
+    (rt) => rt >= 100 && rt <= 3000
+  ).length
+  const practicePassed = practiceValidCount >= 2
+  const isCorrect = (answer) =>
+    answer.winnerListener === COMPREHENSION_CORRECT.winnerListener &&
+    answer.settingTime === COMPREHENSION_CORRECT.settingTime &&
+    answer.goAction === COMPREHENSION_CORRECT.goAction
+  const comprehensionPassed = isCorrect(comprehensionHistory[comprehensionHistory.length - 1])
+  const comprehensionFirstPass = isCorrect(comprehensionHistory[0])
+  const gatePassed = practicePassed && comprehensionPassed
+
+  db.prepare(
+    `update sessions
+     set practice_attempts = ?,
+         practice_valid_rt_count = ?,
+         practice_rt_history_json = ?,
+         comprehension_attempts = ?,
+         comprehension_first_pass = ?,
+         comprehension_passed = ?,
+         comprehension_history_json = ?,
+         preflight_passed = ?,
+         preflight_completed_at = case when ? = 1 then ? else preflight_completed_at end
+     where session_id = ?`
+  ).run(
+    practiceRtHistory.length,
+    practiceValidCount,
+    JSON.stringify(practiceRtHistory),
+    comprehensionHistory.length,
+    comprehensionFirstPass ? 1 : 0,
+    comprehensionPassed ? 1 : 0,
+    JSON.stringify(comprehensionHistory),
+    gatePassed ? 1 : 0,
+    gatePassed ? 1 : 0,
+    nowIso(),
+    sessionId
+  )
+
+  res.json({
+    ok: true,
+    practicePassed,
+    practiceValidCount,
+    comprehensionPassed,
+    comprehensionFirstPass,
+    comprehensionAttempts: comprehensionHistory.length,
+    gatePassed,
+  })
 })
 
 app.post('/api/participant/scales', (req, res) => {
@@ -957,6 +1076,14 @@ app.post('/api/session/hook', (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
 
   const { sessionId, hookReadStartedAt, hookReadEndedAt, angerRating } = parsed.data
+  const session = db
+    .prepare(`select study_version, preflight_passed, completed_at from sessions where session_id = ?`)
+    .get(sessionId)
+  if (!session) return res.status(404).json({ error: 'session_not_found' })
+  if (session.completed_at) return res.status(409).json({ error: 'session_already_completed' })
+  if (session.study_version !== 'q2_v1_legacy' && Number(session.preflight_passed) !== 1) {
+    return res.status(409).json({ error: 'preflight_not_passed' })
+  }
   const r = db
     .prepare(
       `update sessions
@@ -967,7 +1094,6 @@ app.post('/api/session/hook', (req, res) => {
     )
     .run(hookReadStartedAt ?? null, hookReadEndedAt ?? null, angerRating, sessionId)
 
-  if (r.changes === 0) return res.status(404).json({ error: 'session_not_found' })
   res.json({ ok: true })
 })
 
@@ -987,10 +1113,13 @@ app.post('/api/trial', (req, res) => {
 
   const t = parsed.data
   const session = db
-    .prepare(`select session_id, completed_at from sessions where session_id = ?`)
+    .prepare(`select session_id, study_version, preflight_passed, completed_at from sessions where session_id = ?`)
     .get(t.sessionId)
   if (!session) return res.status(404).json({ error: 'session_not_found' })
   if (session.completed_at) return res.status(409).json({ error: 'session_already_completed' })
+  if (session.study_version !== 'q2_v1_legacy' && Number(session.preflight_passed) !== 1) {
+    return res.status(409).json({ error: 'preflight_not_passed' })
+  }
 
   const stmt = db.prepare(`
     insert into trials (
@@ -1212,6 +1341,8 @@ app.get('/api/export.csv', (req, res) => {
     rows.push({
       participant_id: s.participant_id,
       session_id: s.session_id,
+      study_version: s.study_version,
+      data_role: s.data_role,
       invite_token: s.invite_token ?? null,
       started_at: s.started_at,
       completed_at: s.completed_at,
@@ -1221,6 +1352,15 @@ app.get('/api/export.csv', (req, res) => {
       manip_punishment_heavy: s.manip_punishment_heavy,
       manip_angry: s.manip_angry,
       manip_retaliation: s.manip_retaliation,
+      practice_attempts: s.practice_attempts,
+      practice_valid_rt_count: s.practice_valid_rt_count,
+      practice_rt_history_json: s.practice_rt_history_json,
+      comprehension_attempts: s.comprehension_attempts,
+      comprehension_first_pass: s.comprehension_first_pass,
+      comprehension_passed: s.comprehension_passed,
+      comprehension_history_json: s.comprehension_history_json,
+      preflight_passed: s.preflight_passed,
+      preflight_completed_at: s.preflight_completed_at,
       md: s.md,
       cr: s.cr,
       dv1_trial_start: dv.dv1_trial_start,
@@ -1279,6 +1419,8 @@ app.get('/api/export_merged.csv', (req, res) => {
         d.student_cadre,
         d.scholarship,
         s.session_id as q2_session_id,
+        s.study_version as q2_study_version,
+        s.data_role as q2_data_role,
         s.started_at as q2_started_at,
         s.completed_at as q2_completed_at,
         s.anger_rating,
@@ -1287,6 +1429,15 @@ app.get('/api/export_merged.csv', (req, res) => {
         s.manip_punishment_heavy,
         s.manip_angry,
         s.manip_retaliation,
+        s.practice_attempts,
+        s.practice_valid_rt_count,
+        s.practice_rt_history_json,
+        s.comprehension_attempts,
+        s.comprehension_first_pass,
+        s.comprehension_passed,
+        s.comprehension_history_json,
+        s.preflight_passed,
+        s.preflight_completed_at,
         s.invite_token,
         p.md as md_for_q2,
         p.cr as cr_for_q2
@@ -1363,6 +1514,8 @@ app.get('/api/export_trials.csv', (req, res) => {
       rows.push({
         participant_id: s.participant_id,
         session_id: s.session_id,
+        study_version: s.study_version,
+        data_role: s.data_role,
         invite_token: s.invite_token ?? null,
         started_at: s.started_at,
         completed_at: s.completed_at,

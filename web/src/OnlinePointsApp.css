@@ -1,0 +1,463 @@
+.onlinePointsPage {
+  background:
+    radial-gradient(circle at 12% 8%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 30rem),
+    var(--bg);
+}
+
+.onlinePointsCard {
+  width: 760px;
+  padding: clamp(20px, 4vw, 36px);
+}
+
+.onlineRoleBadge {
+  padding: 5px 10px;
+  border: 1px solid rgba(217, 119, 6, 0.4);
+  border-radius: 999px;
+  background: rgba(217, 119, 6, 0.1);
+  color: var(--text-h);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.onlineIntro h1,
+.debriefPanel h1 {
+  margin: 12px 0 18px;
+  font-size: clamp(34px, 7vw, 52px);
+  line-height: 1.08;
+}
+
+.onlineEyebrow {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.onlineLead {
+  max-width: 620px;
+  margin: 0 auto 20px;
+  line-height: 1.75;
+}
+
+.testOnlyBanner {
+  margin: 18px 0 22px;
+  padding: 12px 14px;
+  border: 1px solid rgba(217, 119, 6, 0.45);
+  border-radius: 12px;
+  background: rgba(217, 119, 6, 0.09);
+  color: var(--text-h);
+  line-height: 1.55;
+  text-align: left;
+}
+
+.testSessionToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 20px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: var(--social-bg);
+  color: var(--muted);
+  font-size: 14px;
+  text-align: left;
+}
+
+.testSessionToolbar .secondary {
+  min-height: 38px;
+  padding: 7px 11px;
+  flex-shrink: 0;
+  font-size: 14px;
+}
+
+.onlineConsent {
+  line-height: 1.6;
+}
+
+.onlineWideButton {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.ruleGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 22px 0 14px;
+}
+
+.ruleCard {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--social-bg);
+  line-height: 1.5;
+  text-align: left;
+}
+
+.ruleCard strong {
+  color: var(--text-h);
+}
+
+.onlineRuleNote {
+  margin: 12px 0 20px;
+  line-height: 1.6;
+}
+
+.onlinePointsCard select {
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--code-bg);
+  color: var(--text-h);
+  font-size: 16px;
+}
+
+.taskProgressHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: start;
+  text-align: left;
+}
+
+.balanceGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(100px, 1fr));
+  gap: 8px;
+}
+
+.balanceGrid div {
+  display: grid;
+  gap: 3px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--social-bg);
+  text-align: center;
+}
+
+.balanceGrid span {
+  font-size: 13px;
+}
+
+.balanceGrid strong {
+  color: var(--text-h);
+  font: 700 25px/1 var(--mono);
+}
+
+.progressTrack {
+  height: 7px;
+  margin: 18px 0 30px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--code-bg);
+}
+
+.progressTrack span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #6d5dfc);
+  transition: width 240ms ease;
+}
+
+.choicePanel,
+.reactionStage,
+.roundFeedback {
+  min-height: 390px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.choicePrompt {
+  margin-bottom: 22px;
+  color: var(--text-h);
+  font-size: clamp(19px, 3vw, 24px);
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.pointChoiceGrid {
+  display: grid;
+  grid-template-columns: repeat(11, minmax(42px, 1fr));
+  gap: 7px;
+}
+
+.pointChoice,
+.scaleButton {
+  min-height: 50px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--social-bg);
+  color: var(--text-h);
+  font: 700 18px/1 var(--mono);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.pointChoice.selected,
+.scaleButton.selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.pointAnchor,
+.scaleAnchors {
+  display: flex;
+  justify-content: space-between;
+  margin: 9px 2px 18px;
+  font-size: 13px;
+}
+
+.reactionStage {
+  align-items: center;
+  gap: 14px;
+}
+
+.waitOrb {
+  width: 62px;
+  height: 62px;
+  border: 7px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: onlineSpin 850ms linear infinite;
+}
+
+@keyframes onlineSpin {
+  to { transform: rotate(360deg); }
+}
+
+.goButton {
+  width: min(300px, 75vw);
+  aspect-ratio: 2.25 / 1;
+  border: 0;
+  border-radius: 24px;
+  background: #dc2626;
+  box-shadow: 0 13px 30px rgba(220, 38, 38, 0.28);
+  color: #fff;
+  font-size: clamp(28px, 7vw, 44px);
+  font-weight: 800;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.roundFeedback {
+  align-items: center;
+  gap: 12px;
+}
+
+.roundFeedback h2 {
+  font-size: clamp(30px, 6vw, 46px);
+}
+
+.roundFeedback.win h2 { color: #16803c; }
+.roundFeedback.loss h2 { color: #c42828; }
+
+.deductionLine {
+  color: var(--text-h);
+  font-size: 20px;
+}
+
+.feedbackBalances {
+  display: flex;
+  gap: 18px;
+  margin: 12px 0 4px;
+}
+
+.feedbackBalances span {
+  padding: 10px 15px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--social-bg);
+}
+
+.feedbackBalances strong { color: var(--text-h); }
+
+.scaleField {
+  display: grid;
+  gap: 10px;
+  margin: 24px 0;
+  text-align: left;
+}
+
+.motiveHeading {
+  margin-top: 34px;
+  padding-top: 26px;
+  border-top: 1px solid var(--border);
+}
+
+.scaleButtons {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+}
+
+.scaleButton { min-height: 46px; }
+
+.scaleAnchors { margin: -3px 2px 0; }
+
+.doneMark {
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  margin: 0 auto;
+  border-radius: 50%;
+  background: rgba(22, 128, 60, 0.12);
+  color: #16803c;
+  font-size: 42px;
+  font-weight: 800;
+}
+
+.debriefBox {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--social-bg);
+  line-height: 1.65;
+  text-align: left;
+}
+
+.fullStudyCard > section > h2 {
+  margin: 10px 0 18px;
+}
+
+.setupChecklist {
+  display: grid;
+  gap: 10px;
+  margin: 22px 0;
+}
+
+.setupCheck {
+  align-items: flex-start;
+  margin: 0;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--social-bg);
+  line-height: 1.55;
+  text-align: left;
+}
+
+.practiceBalances {
+  margin: 18px 0;
+}
+
+.compactChoicePanel,
+.compactFeedback {
+  min-height: 300px;
+}
+
+.partnerDisclosureCard,
+.scenarioCard,
+.regulationCard,
+.regulationReminder {
+  margin: 20px 0 24px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--social-bg);
+  line-height: 1.75;
+  text-align: left;
+}
+
+.partnerDisclosureCard p,
+.scenarioCard p,
+.regulationCard p,
+.regulationReminder p {
+  margin: 0 0 12px;
+}
+
+.partnerDisclosureCard p:last-child,
+.scenarioCard p:last-child,
+.regulationCard p:last-child,
+.regulationReminder p:last-child {
+  margin-bottom: 0;
+}
+
+.partnerDisclosureCard strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text-h);
+}
+
+.candidateMeasureBanner,
+.savedDraftNotice {
+  margin: 18px 0;
+  padding: 11px 13px;
+  border: 1px solid rgba(217, 119, 6, 0.4);
+  border-radius: 10px;
+  background: rgba(217, 119, 6, 0.08);
+  color: var(--text-h);
+  font-size: 14px;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.studyTextarea {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+}
+
+.regulationReminder {
+  display: grid;
+  gap: 8px;
+  min-height: 340px;
+  align-content: center;
+  text-align: center;
+}
+
+.checkSectionTitle {
+  margin: 36px 0 8px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+}
+
+.pointChoice:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.pointChoice.selected:disabled {
+  opacity: 1;
+}
+
+@media (max-width: 720px) {
+  .ruleGrid { grid-template-columns: 1fr; }
+  .taskProgressHeader { flex-direction: column; }
+  .balanceGrid { width: 100%; }
+  .pointChoiceGrid { grid-template-columns: repeat(6, 1fr); }
+  .choicePanel, .reactionStage, .roundFeedback { min-height: 350px; }
+}
+
+@media (max-width: 420px) {
+  .onlinePointsCard { max-width: calc(100% - 16px); margin: 8px auto; padding: 18px 14px; }
+  .topbar { padding-left: 12px; padding-right: 12px; }
+  .pointChoiceGrid { gap: 6px; }
+  .pointChoice { min-height: 47px; }
+  .scaleButtons { gap: 5px; }
+  .scaleButton { min-height: 44px; }
+  .feedbackBalances { width: 100%; gap: 8px; }
+  .feedbackBalances span { flex: 1; padding: 9px 8px; }
+  .testSessionToolbar { align-items: stretch; flex-direction: column; }
+  .testSessionToolbar .secondary { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .waitOrb { animation-duration: 1800ms; }
+  .progressTrack span { transition: none; }
+}
