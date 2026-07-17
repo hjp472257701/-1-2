@@ -24,7 +24,20 @@
 - 被试级导出：`/api/online-points/export.csv?token=EXPORT_TOKEN`；
 - trial级导出：`/api/online-points/export_trials.csv?token=EXPORT_TOKEN`。
 
-当前版本号为 `q2_v4_1_clear_zero_15trial_test1_20260716`。本版保留第7轮首次明显扣分，将后续互动压缩为8轮，并增强游戏前指导中对努力、能力和个人价值的重新理解；规则理解题明确区分“0分不扣分”“仍扣1分”和“跳过本轮”。第7轮后仍保留同位置的简短提醒，步骤9只检查参与者是否实际采用过这些想法。`formal` 开关保持关闭；15轮版本的分布、内部一致性和效应保持情况通过预测试前，不得作为正式实验发给学生。
+测试入口版本号为 `q2_v4_1_clear_zero_15trial_test1_20260716`。本版保留第7轮首次明显扣分，将后续互动压缩为8轮，并增强游戏前指导中对努力、能力和个人价值的重新理解；规则理解题明确区分“0分不扣分”“仍扣1分”和“跳过本轮”。第7轮后仍保留同位置的简短提醒，步骤9只检查参与者是否实际采用过这些想法。测试入口继续写入 `data_role=test`，不纳入正式分析。
+
+## 研究二（新）正式入口
+
+预测试版本继续保留在 `/online-points`，其历史数据和导出接口不变。正式收数使用单独入口与单独导出：
+
+- 正式入口：`/online-points-formal`；所有学生使用同一个链接并填写本人学号；
+- 同一学号再次进入时恢复该学号在正式版本中的既有进度，不会新建重复记录；
+- 正式版版本号：`q2_v4_2_15trial_formal_20260717`，`data_role=formal`；
+- 正式被试级导出：`/api/online-points-formal/export.csv?token=EXPORT_TOKEN`；
+- 正式逐轮导出：`/api/online-points-formal/export_trials.csv?token=EXPORT_TOKEN`；
+- 正式导出只包含正式版本，测试数据仍从原 `/api/online-points/` 导出接口下载。
+
+正式入口的知情同意明确说明：学号仅用于不同阶段研究数据匹配，个人作答结果不会提供给任课教师。积分只用于呈现互动过程，不兑换现金或其他奖励。
 
 ## 本地运行
 

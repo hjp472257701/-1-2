@@ -693,8 +693,10 @@ app.get('/admin', (_req, res) => {
           <a id="downloadQ1Items" class="btn" href="#"><button type="button">下载研究一逐题 CSV</button></a>
           <a id="downloadQ2" class="btn" href="#"><button type="button">下载研究二（原）CSV</button></a>
           <a id="downloadTrials" class="btn" href="#"><button type="button">下载研究二（原）逐轮 CSV</button></a>
-          <a id="downloadQ2New" class="btn" href="#"><button type="button">下载研究二（新）CSV</button></a>
-          <a id="downloadTrialsNew" class="btn" href="#"><button type="button">下载研究二（新）逐轮 CSV</button></a>
+          <a id="downloadQ2New" class="btn" href="#"><button type="button">下载研究二（新·测试）CSV</button></a>
+          <a id="downloadTrialsNew" class="btn" href="#"><button type="button">下载研究二（新·测试）逐轮 CSV</button></a>
+          <a id="downloadQ2NewFormal" class="btn" href="#"><button type="button">下载研究二（新·正式）CSV</button></a>
+          <a id="downloadTrialsNewFormal" class="btn" href="#"><button type="button">下载研究二（新·正式）逐轮 CSV</button></a>
           <a id="downloadMerged" class="btn" href="#"><button type="button">下载合并 CSV</button></a>
           <button id="clear" type="button">清除本地口令</button>
         </div>
@@ -703,8 +705,10 @@ app.get('/admin', (_req, res) => {
         <p class="hint">研究一逐题原始作答：/api/export_research1_items.csv?token=EXPORT_TOKEN</p>
         <p class="hint">研究二（原）被试级导出：/api/export.csv?token=EXPORT_TOKEN</p>
         <p class="hint">研究二（原）逐轮导出：/api/export_trials.csv?token=EXPORT_TOKEN</p>
-        <p class="hint">研究二（新）被试级导出：/api/online-points/export.csv?token=EXPORT_TOKEN</p>
-        <p class="hint">研究二（新）逐轮导出：/api/online-points/export_trials.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究二（新·测试）被试级导出：/api/online-points/export.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究二（新·测试）逐轮导出：/api/online-points/export_trials.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究二（新·正式）被试级导出：/api/online-points-formal/export.csv?token=EXPORT_TOKEN</p>
+        <p class="hint">研究二（新·正式）逐轮导出：/api/online-points-formal/export_trials.csv?token=EXPORT_TOKEN</p>
         <p class="hint">研究一+研究二合并导出：/api/export_merged.csv?token=EXPORT_TOKEN</p>
       </div>
       <div class="card">
@@ -757,6 +761,8 @@ app.get('/admin', (_req, res) => {
       const $downloadTrials = document.getElementById('downloadTrials')
       const $downloadQ2New = document.getElementById('downloadQ2New')
       const $downloadTrialsNew = document.getElementById('downloadTrialsNew')
+      const $downloadQ2NewFormal = document.getElementById('downloadQ2NewFormal')
+      const $downloadTrialsNewFormal = document.getElementById('downloadTrialsNewFormal')
       const $downloadQ1Items = document.getElementById('downloadQ1Items')
       const $downloadMerged = document.getElementById('downloadMerged')
       const $err = document.getElementById('err')
@@ -771,6 +777,8 @@ app.get('/admin', (_req, res) => {
         $downloadTrials.href = '/api/export_trials.csv?token=' + encodeURIComponent(t)
         $downloadQ2New.href = '/api/online-points/export.csv?token=' + encodeURIComponent(t)
         $downloadTrialsNew.href = '/api/online-points/export_trials.csv?token=' + encodeURIComponent(t)
+        $downloadQ2NewFormal.href = '/api/online-points-formal/export.csv?token=' + encodeURIComponent(t)
+        $downloadTrialsNewFormal.href = '/api/online-points-formal/export_trials.csv?token=' + encodeURIComponent(t)
         $downloadQ1Items.href = '/api/export_research1_items.csv?token=' + encodeURIComponent(t)
         $downloadMerged.href = '/api/export_merged.csv?token=' + encodeURIComponent(t)
       }
@@ -809,6 +817,8 @@ app.get('/admin', (_req, res) => {
       bindDownloadPreflight($downloadTrials)
       bindDownloadPreflight($downloadQ2New)
       bindDownloadPreflight($downloadTrialsNew)
+      bindDownloadPreflight($downloadQ2NewFormal)
+      bindDownloadPreflight($downloadTrialsNewFormal)
       bindDownloadPreflight($downloadMerged)
 
       const webKey = 'crtt_public_web_url'

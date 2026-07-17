@@ -9,6 +9,7 @@ function pickEntry() {
   const p = window.location.pathname.replace(/\/+$/, '')
   if (p === '/questionnaire') return <QuestionnaireApp />
   if (p === '/online-points') return <FullStudyApp />
+  if (p === '/online-points-formal') return <FullStudyApp mode="formal" />
   return <App />
 }
 

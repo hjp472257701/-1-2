@@ -4,18 +4,24 @@ const { customAlphabet } = require('nanoid')
 const { stringify } = require('csv-stringify/sync')
 
 const sessionNanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 12)
-const STUDY_VERSION = String(
+const TEST_STUDY_VERSION = String(
   process.env.ONLINE_POINTS_STUDY_VERSION || 'q2_v4_1_clear_zero_15trial_test1_20260716'
 ).trim()
 const TOTAL_TRIALS = 15
 const INITIAL_TRIALS = 7
 const INITIAL_POINTS = 200
-const FORMAL_ENABLED = /^true$/i.test(String(process.env.ONLINE_POINTS_FORMAL_ENABLED || 'false'))
-const DEFAULT_ROLE_RAW = String(process.env.ONLINE_POINTS_DEFAULT_DATA_ROLE || 'test').trim()
-const DEFAULT_DATA_ROLE =
-  DEFAULT_ROLE_RAW === 'pilot' || (DEFAULT_ROLE_RAW === 'formal' && FORMAL_ENABLED)
-    ? DEFAULT_ROLE_RAW
+const TEST_FORMAL_ENABLED = /^true$/i.test(String(process.env.ONLINE_POINTS_FORMAL_ENABLED || 'false'))
+const TEST_ROLE_RAW = String(process.env.ONLINE_POINTS_DEFAULT_DATA_ROLE || 'test').trim()
+const TEST_DATA_ROLE =
+  TEST_ROLE_RAW === 'pilot' || (TEST_ROLE_RAW === 'formal' && TEST_FORMAL_ENABLED)
+    ? TEST_ROLE_RAW
     : 'test'
+const FORMAL_STUDY_VERSION = String(
+  process.env.ONLINE_POINTS_FORMAL_STUDY_VERSION || 'q2_v4_2_15trial_formal_20260717'
+).trim()
+const FORMAL_ENTRY_ENABLED = !/^false$/i.test(
+  String(process.env.ONLINE_POINTS_FORMAL_ENTRY_ENABLED || 'true')
+)
 const CONDITIONS = [
   { code: 'freeride_natural', x: 'freeride', w: 'natural' },
   { code: 'freeride_reappraisal', x: 'freeride', w: 'reappraisal' },
@@ -238,11 +244,12 @@ function assignBalancedCondition(db, session, nowIso) {
   return db.prepare('select * from online_point_sessions where session_id = ?').get(session.session_id)
 }
 
-function sessionView(db, sessionId) {
+function sessionView(db, sessionId, expectedStudyVersion) {
   const session = db
     .prepare('select * from online_point_sessions where session_id = ?')
     .get(sessionId)
   if (!session) return null
+  if (expectedStudyVersion && session.study_version !== expectedStudyVersion) return null
   const trials = db
     .prepare(
       'select trial_index, phase, planned_outcome, opponent_deduction_planned, participant_deduction_choice, participant_rt_ms, participant_points_after, opponent_points_after, deducted_from_participant, deducted_from_opponent, opponent_attack_experienced, settled_at from online_point_trials where session_id = ? order by trial_index asc'
@@ -313,25 +320,43 @@ function requireExport(req, res) {
   return true
 }
 
-function registerOnlinePointsRoutes({ app, db, nowIso }) {
-  ensureSchema(db)
+function registerOnlinePointsProgramRoutes({
+  app,
+  db,
+  nowIso,
+  apiPrefix,
+  studyVersion,
+  dataRole,
+  formalEnabled,
+  entryEnabled,
+  exportAllVersions,
+  rewardMode,
+  fullFlowTest,
+  candidateMeasures,
+}) {
+  const viewSession = (sessionId) => sessionView(db, sessionId, studyVersion)
+  const loadSession = (sessionId) =>
+    db
+      .prepare('select * from online_point_sessions where session_id = ? and study_version = ?')
+      .get(sessionId, studyVersion)
 
-  app.get('/api/online-points/config', (_req, res) => {
+  app.get(apiPrefix + '/config', (_req, res) => {
     res.json({
       ok: true,
-      studyVersion: STUDY_VERSION,
-      dataRole: DEFAULT_DATA_ROLE,
-      formalEnabled: FORMAL_ENABLED,
+      studyVersion,
+      dataRole,
+      formalEnabled,
       totalTrials: TOTAL_TRIALS,
       initialTrials: INITIAL_TRIALS,
       initialPoints: INITIAL_POINTS,
-      rewardMode: 'undecided',
-      fullFlowTest: true,
-      candidateMeasures: true,
+      rewardMode,
+      fullFlowTest,
+      candidateMeasures,
     })
   })
 
-  app.post('/api/online-points/session/start', (req, res) => {
+  app.post(apiPrefix + '/session/start', (req, res) => {
+    if (!entryEnabled) return res.status(503).json({ error: 'formal_entry_not_enabled' })
     const schema = z.object({
       participantId: z.string().min(1).max(64),
       userAgent: z.string().max(512).optional(),
@@ -344,9 +369,9 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
       .prepare(
         'select session_id from online_point_sessions where participant_id = ? and study_version = ?'
       )
-      .get(participantId, STUDY_VERSION)
+      .get(participantId, studyVersion)
     if (existing) {
-      return res.json({ ok: true, resumed: true, state: sessionView(db, existing.session_id) })
+      return res.json({ ok: true, resumed: true, state: viewSession(existing.session_id) })
     }
 
     const sessionId = sessionNanoid()
@@ -365,9 +390,9 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
       ).run(
         sessionId,
         participantId,
-        STUDY_VERSION,
-        DEFAULT_DATA_ROLE,
-        'undecided',
+        studyVersion,
+        dataRole,
+        rewardMode,
         INITIAL_POINTS,
         INITIAL_POINTS,
         INITIAL_POINTS,
@@ -376,20 +401,20 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
         nowIso()
       )
     })()
-    return res.json({ ok: true, resumed: false, state: sessionView(db, sessionId) })
+    return res.json({ ok: true, resumed: false, state: viewSession(sessionId) })
   })
 
-  app.get('/api/online-points/session/:sessionId', (req, res) => {
+  app.get(apiPrefix + '/session/:sessionId', (req, res) => {
     const sessionId = String(req.params.sessionId || '')
     if (sessionId.length < 6 || sessionId.length > 32) {
       return res.status(400).json({ error: 'invalid_session_id' })
     }
-    const state = sessionView(db, sessionId)
+    const state = viewSession(sessionId)
     if (!state) return res.status(404).json({ error: 'session_not_found' })
     return res.json({ ok: true, state })
   })
 
-  app.post('/api/online-points/session/setup', (req, res) => {
+  app.post(apiPrefix + '/session/setup', (req, res) => {
     const deviceSchema = z.object({
       userAgent: z.string().max(512),
       screenWidth: z.number().int().min(1).max(20000),
@@ -410,9 +435,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     })
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(parsed.data.sessionId)
+    const session = loadSession(parsed.data.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (!requireStage(session, 'setup', res)) return
     const eligible =
@@ -425,28 +448,26 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     db.prepare(
       'update online_point_sessions set setup_json = ?, flow_stage = ? where session_id = ?'
     ).run(JSON.stringify(parsed.data), 'practice', session.session_id)
-    return res.json({ ok: true, state: sessionView(db, session.session_id) })
+    return res.json({ ok: true, state: viewSession(session.session_id) })
   })
 
-  app.post('/api/online-points/session/visibility', (req, res) => {
+  app.post(apiPrefix + '/session/visibility', (req, res) => {
     const schema = z.object({
       sessionId: z.string().min(6).max(32),
       tabHiddenCount: z.number().int().min(0).max(1000),
     })
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(parsed.data.sessionId)
+    const session = loadSession(parsed.data.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (session.completed_at) return res.status(409).json({ error: 'session_already_completed' })
     db.prepare(
       'update online_point_sessions set tab_hidden_count = max(tab_hidden_count, ?) where session_id = ?'
     ).run(parsed.data.tabHiddenCount, session.session_id)
-    return res.json({ ok: true, state: sessionView(db, session.session_id) })
+    return res.json({ ok: true, state: viewSession(session.session_id) })
   })
 
-  app.post('/api/online-points/session/practice', (req, res) => {
+  app.post(apiPrefix + '/session/practice', (req, res) => {
     const practiceTrial = z.object({
       trialIndex: z.number().int().min(0).max(2),
       choice: z.number().int().min(0).max(10),
@@ -460,9 +481,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     })
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(parsed.data.sessionId)
+    const session = loadSession(parsed.data.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (!requireStage(session, 'practice', res)) return
     const indices = parsed.data.trials.map((trial) => trial.trialIndex)
@@ -470,10 +489,10 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     db.prepare(
       'update online_point_sessions set practice_json = ?, flow_stage = ? where session_id = ?'
     ).run(JSON.stringify(parsed.data.trials), 'rules', session.session_id)
-    return res.json({ ok: true, state: sessionView(db, session.session_id) })
+    return res.json({ ok: true, state: viewSession(session.session_id) })
   })
 
-  app.post('/api/online-points/session/preflight', (req, res) => {
+  app.post(apiPrefix + '/session/preflight', (req, res) => {
     const answerSchema = z.object({
       zeroMeaning: z.enum(['no_deduction', 'deduct_one', 'skip_trial']),
       winnerTarget: z.enum(['self', 'partner', 'both']),
@@ -486,9 +505,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     })
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(parsed.data.sessionId)
+    const session = loadSession(parsed.data.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (session.completed_at) return res.status(409).json({ error: 'session_already_completed' })
     if (!requireStage(session, 'rules', res)) return
@@ -520,9 +537,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
         parsed.data.sessionId
       )
       if (passed) {
-        const fresh = db
-          .prepare('select * from online_point_sessions where session_id = ?')
-          .get(parsed.data.sessionId)
+        const fresh = loadSession(parsed.data.sessionId)
         assignBalancedCondition(db, fresh, nowIso)
       }
     })()
@@ -531,11 +546,11 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
       passed,
       firstPass,
       attempts: parsed.data.comprehensionHistory.length,
-      state: sessionView(db, parsed.data.sessionId),
+      state: viewSession(parsed.data.sessionId),
     })
   })
 
-  app.post('/api/online-points/session/scenario', (req, res) => {
+  app.post(apiPrefix + '/session/scenario', (req, res) => {
     const answerSchema = z.object({
       division: z.enum(['each_half', 'self_only', 'b_only']),
       contribution: z.enum(['self_most', 'both', 'b_most']),
@@ -548,9 +563,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     })
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(parsed.data.sessionId)
+    const session = loadSession(parsed.data.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (!requireStage(session, 'scenario', res)) return
     const correct = (answer) =>
@@ -572,10 +585,10 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
       passed ? 'rd' : 'scenario',
       session.session_id
     )
-    return res.json({ ok: true, passed, firstPass, state: sessionView(db, session.session_id) })
+    return res.json({ ok: true, passed, firstPass, state: viewSession(session.session_id) })
   })
 
-  app.post('/api/online-points/session/rd', (req, res) => {
+  app.post(apiPrefix + '/session/rd', (req, res) => {
     const schema = z.object({
       sessionId: z.string().min(6).max(32),
       answers: z.array(z.number().int().min(1).max(7)).length(4),
@@ -583,9 +596,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     })
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(parsed.data.sessionId)
+    const session = loadSession(parsed.data.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (!requireStage(session, 'rd', res)) return
     const score = mean(parsed.data.answers.slice(1))
@@ -598,10 +609,10 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
       'm',
       session.session_id
     )
-    return res.json({ ok: true, state: sessionView(db, session.session_id) })
+    return res.json({ ok: true, state: viewSession(session.session_id) })
   })
 
-  app.post('/api/online-points/session/moral-disengagement', (req, res) => {
+  app.post(apiPrefix + '/session/moral-disengagement', (req, res) => {
     const schema = z.object({
       sessionId: z.string().min(6).max(32),
       answers: z.record(z.string(), z.number().int().min(1).max(7)),
@@ -609,9 +620,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     })
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(parsed.data.sessionId)
+    const session = loadSession(parsed.data.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (!requireStage(session, 'm', res)) return
     const keys = Object.keys(parsed.data.answers).sort()
@@ -628,10 +637,10 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
       'regulation',
       session.session_id
     )
-    return res.json({ ok: true, state: sessionView(db, session.session_id) })
+    return res.json({ ok: true, state: viewSession(session.session_id) })
   })
 
-  app.post('/api/online-points/session/regulation', (req, res) => {
+  app.post(apiPrefix + '/session/regulation', (req, res) => {
     const schema = z.object({
       sessionId: z.string().min(6).max(32),
       acknowledged: z.literal(true),
@@ -639,9 +648,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     })
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(parsed.data.sessionId)
+    const session = loadSession(parsed.data.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (!requireStage(session, 'regulation', res)) return
     db.prepare(
@@ -652,16 +659,14 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
       'task',
       session.session_id
     )
-    return res.json({ ok: true, state: sessionView(db, session.session_id) })
+    return res.json({ ok: true, state: viewSession(session.session_id) })
   })
 
-  app.post('/api/online-points/session/regulation-reminder', (req, res) => {
+  app.post(apiPrefix + '/session/regulation-reminder', (req, res) => {
     const schema = z.object({ sessionId: z.string().min(6).max(32) })
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(parsed.data.sessionId)
+    const session = loadSession(parsed.data.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (!requireStage(session, 'task', res)) return
     const completedTrials = Number(
@@ -677,10 +682,10 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     db.prepare(
       'update online_point_sessions set regulation_reminder_at = coalesce(regulation_reminder_at, ?) where session_id = ?'
     ).run(nowIso(), session.session_id)
-    return res.json({ ok: true, state: sessionView(db, session.session_id) })
+    return res.json({ ok: true, state: viewSession(session.session_id) })
   })
 
-  app.post('/api/online-points/trial/draft', (req, res) => {
+  app.post(apiPrefix + '/trial/draft', (req, res) => {
     const schema = z.object({
       sessionId: z.string().min(6).max(32),
       trialIndex: z.number().int().min(0).max(TOTAL_TRIALS - 1),
@@ -690,9 +695,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
     const input = parsed.data
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(input.sessionId)
+    const session = loadSession(input.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (!requireStage(session, 'task', res)) return
     const count = Number(
@@ -714,7 +717,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
       ) {
         return res.status(409).json({ error: 'draft_already_exists_with_different_payload' })
       }
-      return res.json({ ok: true, idempotent: true, state: sessionView(db, input.sessionId) })
+      return res.json({ ok: true, idempotent: true, state: viewSession(input.sessionId) })
     }
     db.prepare(
       'insert into online_point_trial_drafts (session_id, trial_index, participant_deduction_choice, idempotency_key, selected_at) values (?, ?, ?, ?, ?)'
@@ -725,10 +728,10 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
       input.idempotencyKey,
       nowIso()
     )
-    return res.json({ ok: true, idempotent: false, state: sessionView(db, input.sessionId) })
+    return res.json({ ok: true, idempotent: false, state: viewSession(input.sessionId) })
   })
 
-  app.post('/api/online-points/trial/settle', (req, res) => {
+  app.post(apiPrefix + '/trial/settle', (req, res) => {
     const schema = z.object({
       sessionId: z.string().min(6).max(32),
       trialIndex: z.number().int().min(0).max(TOTAL_TRIALS - 1),
@@ -739,9 +742,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
     const input = parsed.data
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(input.sessionId)
+    const session = loadSession(input.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     const existing = db
       .prepare('select * from online_point_trials where session_id = ? and trial_index = ?')
@@ -753,7 +754,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
       ) {
         return res.status(409).json({ error: 'trial_already_settled_with_different_payload' })
       }
-      return res.json({ ok: true, idempotent: true, trial: existing, state: sessionView(db, input.sessionId) })
+      return res.json({ ok: true, idempotent: true, trial: existing, state: viewSession(input.sessionId) })
     }
     if (session.completed_at) return res.status(409).json({ error: 'session_already_completed' })
     if (!requireStage(session, 'task', res)) return
@@ -848,10 +849,10 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     const trial = db
       .prepare('select * from online_point_trials where session_id = ? and trial_index = ?')
       .get(input.sessionId, input.trialIndex)
-    return res.json({ ok: true, idempotent: false, trial, state: sessionView(db, input.sessionId) })
+    return res.json({ ok: true, idempotent: false, trial, state: viewSession(input.sessionId) })
   })
 
-  app.post('/api/online-points/session/complete', (req, res) => {
+  app.post(apiPrefix + '/session/complete', (req, res) => {
     const schema = z.object({
       sessionId: z.string().min(6).max(32),
       feedbackResponsiveness: z.number().int().min(1).max(7),
@@ -869,15 +870,13 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     const parsed = schema.safeParse(req.body || {})
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() })
     const input = parsed.data
-    const session = db
-      .prepare('select * from online_point_sessions where session_id = ?')
-      .get(input.sessionId)
+    const session = loadSession(input.sessionId)
     if (!session) return res.status(404).json({ error: 'session_not_found' })
     if (session.completed_at) {
       const completedRows = db
         .prepare('select * from online_point_trials where session_id = ? order by trial_index asc')
         .all(input.sessionId)
-      return res.json({ ok: true, idempotent: true, dv: computeDv(completedRows), state: sessionView(db, input.sessionId) })
+      return res.json({ ok: true, idempotent: true, dv: computeDv(completedRows), state: viewSession(input.sessionId) })
     }
     if (!requireStage(session, 'checks', res)) return
     const rows = db
@@ -928,14 +927,18 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
         input.sessionId
       )
     }
-    return res.json({ ok: true, dv: computeDv(rows), state: sessionView(db, input.sessionId) })
+    return res.json({ ok: true, dv: computeDv(rows), state: viewSession(input.sessionId) })
   })
 
-  app.get('/api/online-points/export.csv', (req, res) => {
+  app.get(apiPrefix + '/export.csv', (req, res) => {
     if (!requireExport(req, res)) return
-    const sessions = db
-      .prepare('select * from online_point_sessions order by started_at asc')
-      .all()
+    const sessions = exportAllVersions
+      ? db.prepare('select * from online_point_sessions order by started_at asc').all()
+      : db
+          .prepare(
+            'select * from online_point_sessions where study_version = ? and data_role = ? order by started_at asc'
+          )
+          .all(studyVersion, dataRole)
     const trialStmt = db.prepare(
       'select * from online_point_trials where session_id = ? order by trial_index asc'
     )
@@ -964,6 +967,7 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
         comprehension_attempts: session.comprehension_attempts,
         comprehension_first_pass: session.comprehension_first_pass,
         comprehension_passed: session.comprehension_passed,
+        comprehension_history_json: session.comprehension_history_json,
         scenario_attempts: session.scenario_attempts,
         scenario_first_pass: session.scenario_first_pass,
         scenario_passed: session.scenario_passed,
@@ -1006,11 +1010,9 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
     return res.send(stringify(rows, { header: true }))
   })
 
-  app.get('/api/online-points/export_trials.csv', (req, res) => {
+  app.get(apiPrefix + '/export_trials.csv', (req, res) => {
     if (!requireExport(req, res)) return
-    const rows = db
-      .prepare(
-        [
+    const queryParts = [
           'select s.participant_id, s.study_version, s.data_role, s.reward_mode,',
           ' s.condition_code, s.condition_x, s.condition_w,',
           ' d.selected_at as choice_selected_at, d.settled_at as draft_settled_at,',
@@ -1022,12 +1024,45 @@ function registerOnlinePointsRoutes({ app, db, nowIso }) {
           ' t.* from online_point_trials t',
           ' join online_point_sessions s on s.session_id = t.session_id',
           ' left join online_point_trial_drafts d on d.session_id = t.session_id and d.trial_index = t.trial_index',
+          ...(exportAllVersions ? [] : [' where s.study_version = ? and s.data_role = ?']),
           ' order by s.started_at asc, t.trial_index asc',
-        ].join('\n')
-      )
-      .all()
+        ]
+    const statement = db.prepare(queryParts.join('\n'))
+    const rows = exportAllVersions ? statement.all() : statement.all(studyVersion, dataRole)
     res.setHeader('content-type', 'text/csv; charset=utf-8')
     return res.send(stringify(rows, { header: true }))
+  })
+}
+
+function registerOnlinePointsRoutes({ app, db, nowIso }) {
+  ensureSchema(db)
+  registerOnlinePointsProgramRoutes({
+    app,
+    db,
+    nowIso,
+    apiPrefix: '/api/online-points',
+    studyVersion: TEST_STUDY_VERSION,
+    dataRole: TEST_DATA_ROLE,
+    formalEnabled: TEST_FORMAL_ENABLED,
+    entryEnabled: true,
+    exportAllVersions: true,
+    rewardMode: 'undecided',
+    fullFlowTest: true,
+    candidateMeasures: true,
+  })
+  registerOnlinePointsProgramRoutes({
+    app,
+    db,
+    nowIso,
+    apiPrefix: '/api/online-points-formal',
+    studyVersion: FORMAL_STUDY_VERSION,
+    dataRole: 'formal',
+    formalEnabled: FORMAL_ENTRY_ENABLED,
+    entryEnabled: FORMAL_ENTRY_ENABLED,
+    exportAllVersions: false,
+    rewardMode: 'none',
+    fullFlowTest: false,
+    candidateMeasures: false,
   })
 }
 
@@ -1036,4 +1071,6 @@ module.exports = {
   TRIAL_PLAN,
   TOTAL_TRIALS,
   INITIAL_TRIALS,
+  TEST_STUDY_VERSION,
+  FORMAL_STUDY_VERSION,
 }

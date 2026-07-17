@@ -98,7 +98,8 @@ type StoredSession = {
   studyVersion: string
 }
 
-const ACTIVE_SESSION_STORAGE_KEY = 'research2_new_active_session'
+const TEST_SESSION_STORAGE_KEY = 'research2_new_active_session'
+const FORMAL_SESSION_STORAGE_KEY = 'research2_new_formal_active_session'
 
 const PRACTICE_PLAN = [
   { outcome: 'win' as const, opponentDeduction: 0 },
@@ -182,9 +183,9 @@ function roleLabel(role: SessionState['dataRole'] | Config['dataRole'] | undefin
   return '完整流程测试'
 }
 
-function readStoredSession(): StoredSession | null {
+function readStoredSession(storageKey: string): StoredSession | null {
   try {
-    const value = window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
+    const value = window.localStorage.getItem(storageKey)
     if (!value) return null
     const parsed = JSON.parse(value) as Partial<StoredSession>
     if (!parsed.sessionId || !parsed.participantId || !parsed.studyVersion) return null
@@ -194,14 +195,14 @@ function readStoredSession(): StoredSession | null {
   }
 }
 
-function persistSession(state: SessionState) {
+function persistSession(state: SessionState, storageKey: string) {
   try {
     if (state.completed) {
-      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
+      window.localStorage.removeItem(storageKey)
       return
     }
     window.localStorage.setItem(
-      ACTIVE_SESSION_STORAGE_KEY,
+      storageKey,
       JSON.stringify({
         sessionId: state.sessionId,
         participantId: state.participantId,
@@ -213,7 +214,10 @@ function persistSession(state: SessionState) {
   }
 }
 
-function FullStudyApp() {
+function FullStudyApp({ mode = 'test' }: { mode?: 'test' | 'formal' }) {
+  const isFormal = mode === 'formal'
+  const apiPrefix = isFormal ? '/api/online-points-formal' : '/api/online-points'
+  const storageKey = isFormal ? FORMAL_SESSION_STORAGE_KEY : TEST_SESSION_STORAGE_KEY
   const [config, setConfig] = useState<Config | null>(null)
   const [step, setStep] = useState<'login' | FlowStage>('login')
   const [participantId, setParticipantId] = useState(readPidFromUrl)
@@ -278,7 +282,7 @@ function FullStudyApp() {
 
   useEffect(() => {
     let active = true
-    void apiFetch('/api/online-points/config')
+    void apiFetch(apiPrefix + '/config')
       .then((response) => readJson<{ ok: boolean } & Config>(response))
       .then((body) => {
         if (active) setConfig(body)
@@ -290,7 +294,7 @@ function FullStudyApp() {
       active = false
       if (timerRef.current != null) window.clearTimeout(timerRef.current)
     }
-  }, [])
+  }, [apiPrefix])
 
   const activeSessionId = session?.sessionId
   const sessionCompleted = session?.completed
@@ -302,7 +306,7 @@ function FullStudyApp() {
     const recordVisibilityChange = () => {
       if (document.visibilityState !== 'hidden') return
       visibilityCountRef.current += 1
-      void postJson<{ ok: boolean; state: SessionState }>('/api/online-points/session/visibility', {
+      void postJson<{ ok: boolean; state: SessionState }>(apiPrefix + '/session/visibility', {
         sessionId: activeSessionId,
         tabHiddenCount: visibilityCountRef.current,
       }).catch(() => {
@@ -311,11 +315,11 @@ function FullStudyApp() {
     }
     document.addEventListener('visibilitychange', recordVisibilityChange)
     return () => document.removeEventListener('visibilitychange', recordVisibilityChange)
-  }, [activeSessionId, sessionCompleted, serverTabHiddenCount])
+  }, [activeSessionId, apiPrefix, sessionCompleted, serverTabHiddenCount])
 
   const routeFromSession = useCallback((state: SessionState) => {
     setSession(state)
-    persistSession(state)
+    persistSession(state, storageKey)
     visibilityCountRef.current = Math.max(visibilityCountRef.current, state.tabHiddenCount || 0)
     setStep(state.flowStage)
     if (state.flowStage === 'task') {
@@ -333,18 +337,18 @@ function FullStudyApp() {
         pendingKeyRef.current = null
       }
     }
-  }, [config?.initialTrials])
+  }, [config?.initialTrials, storageKey])
 
   useEffect(() => {
     if (!config) return
-    const stored = readStoredSession()
+    const stored = readStoredSession(storageKey)
     if (!stored) return
     if (stored.studyVersion !== config.studyVersion) {
-      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
+      window.localStorage.removeItem(storageKey)
       return
     }
     let active = true
-    void apiFetch('/api/online-points/session/' + encodeURIComponent(stored.sessionId))
+    void apiFetch(apiPrefix + '/session/' + encodeURIComponent(stored.sessionId))
       .then((response) => readJson<{ ok: boolean; state: SessionState }>(response))
       .then((body) => {
         if (!active) return
@@ -352,19 +356,19 @@ function FullStudyApp() {
           body.state.studyVersion !== stored.studyVersion ||
           body.state.participantId !== stored.participantId
         ) {
-          window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
+          window.localStorage.removeItem(storageKey)
           return
         }
         setParticipantId(body.state.participantId)
         routeFromSession(body.state)
       })
       .catch(() => {
-        window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
+        window.localStorage.removeItem(storageKey)
       })
     return () => {
       active = false
     }
-  }, [config, routeFromSession])
+  }, [apiPrefix, config, routeFromSession, storageKey])
 
   useEffect(() => {
     stepEnteredAtRef.current = Date.now()
@@ -390,11 +394,11 @@ function FullStudyApp() {
   async function startSession() {
     const normalizedId = participantId.trim()
     if (!normalizedId || !consented) {
-      setError('请填写测试编号，并确认知情同意。')
+      setError(isFormal ? '请填写学号，并确认知情同意。' : '请填写测试编号，并确认知情同意。')
       return
     }
     await runAction(() =>
-      postJson<{ ok: boolean; state: SessionState }>('/api/online-points/session/start', {
+      postJson<{ ok: boolean; state: SessionState }>(apiPrefix + '/session/start', {
         participantId: normalizedId,
         userAgent: navigator.userAgent,
       })
@@ -409,12 +413,16 @@ function FullStudyApp() {
       !setup.pageReadable ||
       setup.priorSimilarStudy
     ) {
-      setError('当前完整流程测试要求全部设备条件满足，且未接触过本实验事后说明。')
+      setError(
+        isFormal
+          ? '请确认当前环境满足全部条件，且此前未接触过本实验的事后说明。'
+          : '当前完整流程测试要求全部设备条件满足，且未接触过本实验事后说明。'
+      )
       return
     }
     if (!session) return
     await runAction(() =>
-      postJson<{ ok: boolean; state: SessionState }>('/api/online-points/session/setup', {
+      postJson<{ ok: boolean; state: SessionState }>(apiPrefix + '/session/setup', {
         sessionId: session.sessionId,
         ...setup,
         device: {
@@ -455,7 +463,7 @@ function FullStudyApp() {
       return
     }
     await runAction(() =>
-      postJson<{ ok: boolean; state: SessionState }>('/api/online-points/session/practice', {
+      postJson<{ ok: boolean; state: SessionState }>(apiPrefix + '/session/practice', {
         sessionId: session.sessionId,
         trials: practiceRecords,
       })
@@ -477,7 +485,7 @@ function FullStudyApp() {
     setError(null)
     try {
       const body = await postJson<{ ok: boolean; passed: boolean; state: SessionState }>(
-        '/api/online-points/session/preflight',
+        apiPrefix + '/session/preflight',
         { sessionId: session.sessionId, comprehensionHistory: history }
       )
       setPreflightHistory(history)
@@ -509,7 +517,7 @@ function FullStudyApp() {
     setError(null)
     try {
       const body = await postJson<{ ok: boolean; passed: boolean; state: SessionState }>(
-        '/api/online-points/session/scenario',
+        apiPrefix + '/session/scenario',
         {
           sessionId: session.sessionId,
           answerHistory: history,
@@ -536,7 +544,7 @@ function FullStudyApp() {
       return
     }
     await runAction(() =>
-      postJson<{ ok: boolean; state: SessionState }>('/api/online-points/session/rd', {
+      postJson<{ ok: boolean; state: SessionState }>(apiPrefix + '/session/rd', {
         sessionId: session.sessionId,
         answers: rdAnswers,
         durationMs: currentStepDurationMs(),
@@ -551,7 +559,7 @@ function FullStudyApp() {
     }
     await runAction(() =>
       postJson<{ ok: boolean; state: SessionState }>(
-        '/api/online-points/session/moral-disengagement',
+        apiPrefix + '/session/moral-disengagement',
         {
           sessionId: session.sessionId,
           answers: mAnswers,
@@ -564,7 +572,7 @@ function FullStudyApp() {
   async function submitRegulation() {
     if (!session) return
     await runAction(() =>
-      postJson<{ ok: boolean; state: SessionState }>('/api/online-points/session/regulation', {
+      postJson<{ ok: boolean; state: SessionState }>(apiPrefix + '/session/regulation', {
         sessionId: session.sessionId,
         acknowledged: true,
         durationMs: currentStepDurationMs(),
@@ -582,7 +590,7 @@ function FullStudyApp() {
       if (!activeSession.pendingDraft) {
         key = makeIdempotencyKey(session.sessionId, session.nextTrialIndex)
         const body = await postJson<{ ok: boolean; state: SessionState }>(
-          '/api/online-points/trial/draft',
+          apiPrefix + '/trial/draft',
           {
             sessionId: session.sessionId,
             trialIndex: session.nextTrialIndex,
@@ -619,7 +627,7 @@ function FullStudyApp() {
     setError(null)
     try {
       const body = await postJson<{ ok: boolean; trial: TrialRecord; state: SessionState }>(
-        '/api/online-points/trial/settle',
+        apiPrefix + '/trial/settle',
         {
           sessionId: session.sessionId,
           trialIndex: session.nextTrialIndex,
@@ -664,7 +672,7 @@ function FullStudyApp() {
     setError(null)
     try {
       const body = await postJson<{ ok: boolean; state: SessionState }>(
-        '/api/online-points/session/regulation-reminder',
+        apiPrefix + '/session/regulation-reminder',
         { sessionId: session.sessionId }
       )
       setSession(body.state)
@@ -696,7 +704,7 @@ function FullStudyApp() {
       return
     }
     await runAction(() =>
-      postJson<{ ok: boolean; state: SessionState }>('/api/online-points/session/complete', {
+      postJson<{ ok: boolean; state: SessionState }>(apiPrefix + '/session/complete', {
         sessionId: session.sessionId,
         feedbackResponsiveness,
         believedChoiceAffectedOpponent,
@@ -715,7 +723,7 @@ function FullStudyApp() {
 
   function restartInternalTest() {
     try {
-      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
+      window.localStorage.removeItem(storageKey)
     } finally {
       const url = new URL(window.location.href)
       url.searchParams.delete('pid')
@@ -753,42 +761,53 @@ function FullStudyApp() {
 
         {step === 'login' && (
           <section className="onlineIntro">
-            <p className="onlineEyebrow">研究二 · 完整流程测试版</p>
+            <p className="onlineEyebrow">{isFormal ? '研究二 · 正式测验' : '研究二 · 完整流程测试版'}</p>
             <h1>互动决策研究</h1>
             <p className="onlineLead">
               完整流程约需10分钟，包含情境阅读、简短问卷和15轮互动任务。请在安静环境中一次完成。
             </p>
-            <div className="testOnlyBanner">
-              当前版本只用于研究者内部测试。候选量表、奖励和伦理文本尚未正式冻结，不能用于正式招募。
-            </div>
+            {!isFormal && (
+              <div className="testOnlyBanner">
+                当前版本只用于研究者内部测试。候选量表、奖励和伦理文本尚未正式冻结，不能用于正式招募。
+              </div>
+            )}
             <label className="field">
-              <span className="label">测试编号</span>
+              <span className="label">{isFormal ? '学号' : '测试编号'}</span>
               <input
                 type="text"
                 value={participantId}
                 maxLength={64}
                 autoComplete="off"
                 onChange={(event) => setParticipantId(event.target.value)}
-                placeholder="例如 FULLTEST-001"
+                placeholder={isFormal ? '请输入本人学号' : '例如 FULLTEST-001'}
               />
             </label>
+            {isFormal && (
+              <p className="muted onlineRuleNote">
+                请准确填写本人学号。若中途退出，再次打开本链接并输入同一学号，可继续上次进度，不会重复生成一份记录。
+              </p>
+            )}
             <label className="checkbox onlineConsent">
               <input
                 type="checkbox"
                 checked={consented}
                 onChange={(event) => setConsented(event.target.checked)}
               />
-              <span>我了解这是内部流程测试，可能包含竞争、不公平情境、积分损失和事后说明；我自愿参加。</span>
+              <span>
+                {isFormal
+                  ? '我已了解本研究可能包含竞争、不公平情境、积分损失和事后说明；我自愿参加。学号仅用于不同阶段研究数据的匹配，个人作答结果不会提供给任课教师。'
+                  : '我了解这是内部流程测试，可能包含竞争、不公平情境、积分损失和事后说明；我自愿参加。'}
+              </span>
             </label>
             <button className="primary onlineWideButton" disabled={busy || !config} onClick={startSession}>
-              {busy ? '正在进入…' : '开始完整测试'}
+              {busy ? '正在进入…' : isFormal ? '开始测验' : '开始完整测试'}
             </button>
           </section>
         )}
 
         {step === 'setup' && (
           <section>
-            <p className="onlineEyebrow">步骤1 · 测试准备</p>
+            <p className="onlineEyebrow">步骤1 · {isFormal ? '测验准备' : '测试准备'}</p>
             <h2>请确认当前条件</h2>
             <div className="setupChecklist">
               <SetupCheck
@@ -1153,7 +1172,7 @@ function FullStudyApp() {
             <ScaleField label="总体来说，我认真完成了这项任务" value={seriousCompletion} onChange={setSeriousCompletion} left="完全不同意" right="完全同意" />
             <ScaleField label="完成任务期间，设备、网络、他人或周围环境对我造成了多大干扰？" value={interruptionLevel} onChange={setInterruptionLevel} left="完全没有干扰" right="干扰非常大" />
             <button className="primary onlineWideButton" disabled={busy} onClick={completeSession}>
-              {busy ? '正在提交…' : '提交完整测试'}
+              {busy ? '正在提交…' : isFormal ? '提交并完成' : '提交完整测试'}
             </button>
           </section>
         )}
@@ -1161,14 +1180,18 @@ function FullStudyApp() {
         {step === 'done' && (
           <section className="debriefPanel">
             <div className="doneMark">✓</div>
-            <h1>完整流程测试已完成</h1>
+            <h1>{isFormal ? '测验已完成' : '完整流程测试已完成'}</h1>
             <div className="debriefBox">
               <h2>事后说明</h2>
               <p>
                 正如任务开始前所说明的，伙伴B并非另一位实时参与者。为保证每位参与者经历相同条件，伙伴B、每轮胜负和B的扣分均由程序按照统一规则预先设定。
                 情境与互动任务用于研究不公平经历、思考方式和互动选择之间的关系。
               </p>
-              <p>当前是内部技术测试，积分不对应真实奖励。正式版的数据撤回期限、研究者联系方式和奖励规则仍待伦理确认。</p>
+              <p>
+                {isFormal
+                  ? '本任务中的积分只用于呈现互动过程，不兑换现金或其他奖励。'
+                  : '当前是内部技术测试，积分不对应真实奖励。正式版的数据撤回期限、研究者联系方式和奖励规则仍待伦理确认。'}
+              </p>
             </div>
             <p className="muted">现在可以安全关闭页面。</p>
           </section>
@@ -1176,7 +1199,7 @@ function FullStudyApp() {
       </main>
 
       <footer className="footer muted">
-        研究二完整流程测试 · {config?.studyVersion || '正在读取版本'}
+        {isFormal ? '研究二正式测验' : '研究二完整流程测试'} · {config?.studyVersion || '正在读取版本'}
       </footer>
     </div>
   )

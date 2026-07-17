@@ -70,6 +70,33 @@ async function main() {
     assert.equal(config.body.initialTrials, 7)
     assert.equal(config.body.formalEnabled, false)
 
+    const formalConfig = await jsonRequest('/api/online-points-formal/config')
+    assert.equal(formalConfig.response.status, 200)
+    assert.equal(formalConfig.body.studyVersion, 'q2_v4_2_15trial_formal_20260717')
+    assert.equal(formalConfig.body.dataRole, 'formal')
+    assert.equal(formalConfig.body.formalEnabled, true)
+    assert.equal(formalConfig.body.totalTrials, 15)
+
+    const formalStarted = await post('/api/online-points-formal/session/start', {
+      participantId: '20260001',
+      userAgent: 'integration-test-formal',
+    })
+    assert.equal(formalStarted.response.status, 200)
+    assert.equal(formalStarted.body.resumed, false)
+    assert.equal(formalStarted.body.state.dataRole, 'formal')
+    const formalSessionId = formalStarted.body.state.sessionId
+
+    const formalResumed = await post('/api/online-points-formal/session/start', {
+      participantId: '20260001',
+      userAgent: 'integration-test-formal-second-device',
+    })
+    assert.equal(formalResumed.response.status, 200)
+    assert.equal(formalResumed.body.resumed, true)
+    assert.equal(formalResumed.body.state.sessionId, formalSessionId)
+
+    const formalThroughTestApi = await jsonRequest('/api/online-points/session/' + formalSessionId)
+    assert.equal(formalThroughTestApi.response.status, 404)
+
     const started = await post('/api/online-points/session/start', {
       participantId: 'online-test-001',
       userAgent: 'integration-test',
@@ -80,6 +107,11 @@ async function main() {
     assert.equal(started.body.state.opponentPoints, 200)
     assert.equal(started.body.state.flowStage, 'setup')
     const sessionId = started.body.state.sessionId
+
+    const testThroughFormalApi = await jsonRequest(
+      '/api/online-points-formal/session/' + sessionId
+    )
+    assert.equal(testThroughFormalApi.response.status, 404)
 
     const visibility = await post('/api/online-points/session/visibility', {
       sessionId,
@@ -456,6 +488,7 @@ async function main() {
     assert.match(subjectCsv, /regulation_duration_ms/)
     assert.match(subjectCsv, /motive_score_gap/)
     assert.match(subjectCsv, /feedback_responsiveness/)
+    assert.match(subjectCsv, /comprehension_history_json/)
     assert.match(subjectCsv, /32000/)
     assert.match(subjectCsv, /41000/)
 
@@ -469,6 +502,13 @@ async function main() {
     assert.match(trialCsv, /choice_change_from_previous/)
     assert.match(trialCsv, /prior_deducted_from_participant/)
     assert.equal(trialCsv.trim().split(/\r?\n/).length, 16)
+
+    const formalSubjectCsv = await fetch(
+      base + '/api/online-points-formal/export.csv?token=' + exportToken
+    ).then((response) => response.text())
+    assert.match(formalSubjectCsv, /q2_v4_2_15trial_formal_20260717/)
+    assert.match(formalSubjectCsv, /20260001/)
+    assert.doesNotMatch(formalSubjectCsv, /online-test-001/)
 
     console.log('Online points integration test passed')
   } finally {
