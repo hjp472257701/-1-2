@@ -11,6 +11,11 @@ const publicFiles=new Set(['app.mjs','entry.mjs','response-presentation.mjs','wo
 const previewPages=new Set(ENTRIES.map(e=>'try/'+e.id+'/'));
 const previewAPIs=new Set(['content','state','start','action','leave','export.json','export.csv']);
 export function cloudSource(name,source){
+ // Presentation only: keep entry IDs, wave keys, answers and researcher hub unchanged.
+ if(['entry.mjs','app.mjs'].includes(name))source=source
+  .replaceAll('中测 · 四次练习结束','问卷填写').replaceAll('中测 · 四次训练结束','问卷填写')
+  .replaceAll('后测 · 结束两周后','问卷填写').replaceAll('前测 · 训练前','问卷填写')
+  .replaceAll('前测','问卷填写').replaceAll('中测','问卷填写').replaceAll('后测','问卷填写');
  if(name==='entry.mjs')return source.replace("export const BASE='/study3-four-session/';","export const BASE='/study3/';");
  if(name==='index.html')return source.replaceAll('href="/','href="/study3/').replaceAll('src="/','src="/study3/').replace('本地测试环境','云端测试环境');
  if(name!=='app.mjs')return source;

@@ -58,6 +58,9 @@ test('进入速率及测试容量上限，超限不删除已有记录',async()=>
 test('路径改写仅影响网页资源，原程序和测量不换；相对依赖保留',()=>{
  const source=readFileSync(new URL('./app.mjs',import.meta.url),'utf8');const out=cloudSource('app.mjs',source);assert.match(out,/fetch\('\/study3'\+path/);assert.ok(!out.includes("from '/entry.mjs'"));assert.ok(out.includes('云端试做版'));
  const entry=cloudSource('entry.mjs',readFileSync(new URL('./entry.mjs',import.meta.url),'utf8'));assert.match(entry,/BASE='\/study3\/'/);
+ assert.doesNotMatch(entry,/前测|中测|后测/);assert.doesNotMatch(out,/前测|中测|后测/);
+ assert.match(entry,/wave:'T0'/);assert.match(entry,/wave:'T1'/);assert.match(entry,/wave:'T2'/);
+ assert.match(entry,/id:'pre'/);assert.match(entry,/id:'mid'/);assert.match(entry,/id:'post'/);
  const copy=readFileSync(new URL('./source-training.mjs',import.meta.url),'utf8');assert.equal(cloudSource('source-training.mjs',copy),copy);
 });
 test('通过current符号链接启动时也实际监听，而非直接正常退出',async()=>{
