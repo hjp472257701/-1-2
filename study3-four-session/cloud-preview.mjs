@@ -2,6 +2,7 @@
 import {createServer,request} from 'node:http';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {realpathSync} from 'node:fs';
 import {makeServer} from './server.mjs';
 import {ENTRIES} from './entry.mjs';
 export const CLOUD_BASE='/study3/';
@@ -79,7 +80,7 @@ export async function createCloudPreview({origin,dataDir,maxAssignments=200,star
  const close=async()=>{if(server.listening)await new Promise(r=>server.close(r));await new Promise(r=>backend.server.close(r));backend.store.close();};
  return {server,close,backend};
 }
-if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
+if(process.argv[1]&&realpathSync(resolve(process.argv[1]))===fileURLToPath(import.meta.url)){
  const app=await createCloudPreview({origin:process.env.S3_PUBLIC_ORIGIN,dataDir:process.env.S3_DATA_DIR});
  app.server.listen(Number(process.env.S3_CLOUD_PORT||8785),'127.0.0.1',()=>console.log('研究三云端技术试做已启动；正式收数关闭。'));
  for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>app.close().then(()=>process.exit(0)));

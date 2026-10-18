@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,readFileSync} from 'node:fs';
+import {mkdtempSync,readFileSync,symlinkSync} from 'node:fs';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {request} from 'node:http';
@@ -57,4 +59,10 @@ test('路径改写仅影响网页资源，原程序和测量不换；相对依�
  const source=readFileSync(new URL('./app.mjs',import.meta.url),'utf8');const out=cloudSource('app.mjs',source);assert.match(out,/fetch\('\/study3'\+path/);assert.ok(!out.includes("from '/entry.mjs'"));assert.ok(out.includes('云端试做版'));
  const entry=cloudSource('entry.mjs',readFileSync(new URL('./entry.mjs',import.meta.url),'utf8'));assert.match(entry,/BASE='\/study3\/'/);
  const copy=readFileSync(new URL('./source-training.mjs',import.meta.url),'utf8');assert.equal(cloudSource('source-training.mjs',copy),copy);
+});
+test('通过current符号链接启动时也实际监听，而非直接正常退出',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'s3-cloud-symlink-')),entry=join(dir,'current.mjs');symlinkSync(fileURLToPath(new URL('./cloud-preview.mjs',import.meta.url)),entry);
+ const child=spawn(process.execPath,[entry],{env:{...process.env,S3_PUBLIC_ORIGIN:origin,S3_DATA_DIR:join(dir,'data'),S3_CLOUD_PORT:'0'},stdio:['ignore','pipe','pipe']});
+ try{await new Promise((yes,no)=>{const timeout=setTimeout(()=>no(Error('符号链接启动超时')),5000);child.once('exit',code=>{clearTimeout(timeout);no(Error('启动后意外退出 '+code));});child.stdout.on('data',chunk=>{if(String(chunk).includes('研究三云端技术试做已启动')){clearTimeout(timeout);yes();}});child.once('error',no);});}
+ finally{child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));}
 });
