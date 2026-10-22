@@ -6,6 +6,7 @@ import {realpathSync} from 'node:fs';
 import {makeServer} from './server.mjs';
 import {ENTRIES} from './entry.mjs';
 import {researcherHandler} from './researcher-export.mjs';
+import {projectPortal,fetchOriginalAdmin,unifiedAdmin} from './project-portal.mjs';
 export const CLOUD_BASE='/study3/';
 const noStore={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"};
 const publicFiles=new Set(['app.mjs','entry.mjs','response-presentation.mjs','workbench.mjs','readable-training.mjs','application-training.mjs','source-training.mjs','reviewed-courses.mjs','source-progress.mjs','styles.css']);
@@ -28,7 +29,7 @@ export function cloudSource(name,source){
   .replace('例如 TRYV91014','例如 CLOUDTEST-1018A');
 }
 export function hub(){return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>研究三 · 云端测试入口</title><link rel="stylesheet" href="/study3/styles.css"></head><body><main><h1>研究三 · 云端测试</h1><p class="warning">仅供研究者检查流程，不是正式收数。请勿填写真实学号、姓名或私人经历。</p><p>各环节可独立试做。请全程使用同一个虚拟测试号码，例如 CLOUDTEST-1018A；同号保留原组和已存进度。测试号码必须以 CLOUDTEST- 开头。</p><ul>'+ENTRIES.map(e=>'<li><a href="/study3/try/'+e.id+'/">'+e.label+'</a></li>').join('')+'</ul><p>实际研究顺序：前测 → 四次训练 → 中测 → 训练结束两周后的后测。这里允许直接打开各环节，仅用于技术检查。</p><p>正式收数：未开放。当前为v0.9模型、v47定稿文案。</p></main></body></html>';}
-export async function createCloudPreview({origin,dataDir,maxAssignments=200,startLimit=30}={}){
+export async function createCloudPreview({origin,dataDir,maxAssignments=200,startLimit=30,legacyAdminURL='http://127.0.0.1:3001/admin'}={}){
  const publicURL=new URL(origin);
  if(!['http:','https:'].includes(publicURL.protocol)||publicURL.username||publicURL.password||publicURL.pathname!=='/'||publicURL.search||publicURL.hash)throw Error('必须设置不带路径和凭据的公开origin');
  if(!dataDir)throw Error('云端必须指定独立数据目录');
@@ -47,6 +48,10 @@ export async function createCloudPreview({origin,dataDir,maxAssignments=200,star
    if(req.headers.origin&&req.headers.origin!==requestOrigin)return reply(403,{error:'拒绝跨站请求'});
    if((req.url??'').includes('?')||(req.url??'').includes('#')||(req.url??'').includes('%'))return reply(400,{error:'请使用不带参数的测试链接'});
    const url=new URL(req.url,publicURL.origin);
+   if(req.method==='GET'&&(url.pathname==='/studies/'||url.pathname==='/studies'))return reply(200,projectPortal(),'text/html; charset=utf-8');
+   if(req.method==='GET'&&url.pathname==='/admin'){
+    try{const result=unifiedAdmin(await fetchOriginalAdmin(legacyAdminURL),{secure:!legacyHTTP&&publicURL.protocol==='https:',origin:publicURL.origin});res.writeHead(200,result.headers);res.end(result.html);}catch{return reply(503,{error:'原管理页暂不可用；研究三原独立入口与已有记录保持，请稍后重试。'});}return;
+   }
    if(url.pathname==='/study3'&&req.method==='GET'){res.writeHead(302,{...noStore,Location:CLOUD_BASE});return res.end();}
    if(!url.pathname.startsWith(CLOUD_BASE))return reply(404,{error:'只提供研究三测试入口'});
    const tail=url.pathname.slice(CLOUD_BASE.length);

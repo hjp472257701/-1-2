@@ -1,5 +1,21 @@
 # Study 3 researcher exports (technical preview only)
 
+## Shared project navigation
+
+`/studies/` lists the three studies; `/admin` retains the original Study1/2 export
+buttons and original download/invitation script, adding an isolated Study3 section.
+Over HTTPS the Study3 researcher page embeds same-origin; its cookie stays scoped to
+`/study3/researcher/` and does not authorize old study exports. Over HTTP only a link
+to the encrypted manager is shown, not a plaintext password form. The original
+Study1/2 API routes and process remain unchanged. The gateway reads only the original
+static `/admin` HTML from loopback, never its database, export token or answers.
+The seven existing Study3 preview URLs and private storage do not move or reset.
+
+Local integration tests: `node --test project-portal.test.mjs` use the repository's
+original server source without starting its database. Server acceptance is
+`node project-portal-acceptance.mjs`, comparing the live original admin script and
+download button IDs against both HTTP/HTTPS unified pages. It never reads old exports.
+
 `/study3/researcher/` provides password-protected overview and bulk ZIP / JSON downloads.
 It is enabled only with an HTTPS public origin. There is no anonymous batch export.
 Student number-only preview entries remain separate from administrator authentication.

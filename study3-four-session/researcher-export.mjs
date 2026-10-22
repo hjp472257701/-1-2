@@ -60,7 +60,7 @@ export function researcherHandler({store,origin,dataDir}){
   const token=(req.headers.cookie??'').split(';').map(x=>x.trim()).find(x=>x.startsWith('s3researcher='))?.slice(13),key=token?createHash('sha256').update(token).digest('hex'):null;
   const authenticated=key&&sessions.get(key)>Date.now();
   for(const [k,t] of sessions)if(t<=Date.now())sessions.delete(k);
-  if(req.method==='GET'&&tail==='researcher/')send(200,readFileSync(new URL('./researcher.html',import.meta.url)),'text/html; charset=utf-8');
+  if(req.method==='GET'&&tail==='researcher/')send(200,readFileSync(new URL('./researcher.html',import.meta.url)),'text/html; charset=utf-8',{'X-Frame-Options':'SAMEORIGIN','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'self'; form-action 'self'; object-src 'none'; base-uri 'none'"});
   else if(req.method==='GET'&&tail==='researcher/app.mjs')send(200,readFileSync(new URL('./researcher-app.mjs',import.meta.url)),'text/javascript; charset=utf-8');
   else if(req.method==='POST'&&['researcher/login','researcher/logout'].includes(tail)){
    if(req.headers.origin!==origin||!/^application\/json(?:;|$)/i.test(req.headers['content-type']??'')){send(403,{error:'拒绝跨站登录'});return true;}

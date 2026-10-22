@@ -1,0 +1,20 @@
+// Shared navigation only. Never queries Study 1/2 databases or proxies their exports.
+import {request} from 'node:http';
+import {randomBytes} from 'node:crypto';
+export function projectPortal(){return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>毕业论文 · 三个研究入口</title><link rel="stylesheet" href="/study3/styles.css"></head><body><main><h1>毕业论文 · 研究入口</h1><p>本页供研究者整理链接。每次只把对应环节链接发给参与者，不要让参与者自行选择研究或阶段。</p><section class="panel"><h2>研究一</h2><p><a href="/questionnaire">问卷入口</a></p></section><section class="panel"><h2>研究二</h2><p><a href="/">原实验入口</a> · <a href="/online-points">新方案测试入口</a> · <a href="/online-points-formal">既有新方案正式入口</a></p><p>保留原有版本标记与用途，不因本页新增链接改变研究二版本或收数状态。</p></section><section class="panel"><h2>研究三（技术测试）</h2><p>当前只用CLOUDTEST-开头的虚拟号码；同一人七次使用同号，已有记录继续保留。正式收数未开放。</p><ol><li><a href="/study3/try/pre/">前测</a></li><li><a href="/study3/try/practice-1/">训练一</a></li><li><a href="/study3/try/practice-2/">训练二</a></li><li><a href="/study3/try/practice-3/">训练三</a></li><li><a href="/study3/try/practice-4/">训练四</a></li><li><a href="/study3/try/mid/">中测</a></li><li><a href="/study3/try/post/">后测</a></li></ol><p>前／中／后测仅在本研究者清单标注，参与者问卷标题仍为“问卷填写”。</p></section><p><a href="/admin">三个研究统一下载管理</a></p><p>三个研究分别保存、分别导出，不混合答卷。研究三正式版仍需单独验收。</p></main></body></html>`;}
+export function fetchOriginalAdmin(address='http://127.0.0.1:3001/admin'){
+ const u=new URL(address);if(u.protocol!=='http:'||u.hostname!=='127.0.0.1'||u.pathname!=='/admin'||u.search||u.username||u.password)throw Error('原管理页只能从固定本机地址读取');
+ return new Promise((yes,no)=>{const req=request(u,{method:'GET',headers:{Accept:'text/html'}},res=>{let chunks=[],size=0;if(res.statusCode!==200){res.resume();no(Error('原管理页暂不可用'));return;}res.on('data',chunk=>{size+=chunk.length;if(size>256000){res.destroy(Error('管理页过大'));return;}chunks.push(chunk);});res.on('end',()=>yes(Buffer.concat(chunks).toString('utf8')));res.on('error',no);});req.setTimeout(5000,()=>req.destroy(Error('读取原管理页超时')));req.on('error',no);req.end();});
+}
+export function unifiedAdmin(original,{secure,origin}){
+ const marker='<h1>生成被试邀请链接</h1>';
+ if(!original.includes(marker)||!original.includes('id="downloadQ1"')||!original.includes('id="downloadQ2"'))throw Error('原管理页结构已改变，未静默替换');
+ const nonce=randomBytes(18).toString('base64');
+ const study3=`<div class="card" id="study3-management"><h1>研究三下载（技术测试）</h1><p>记录与研究一、二独立，原测试号码、七个链接、组别和进度保持。</p>${secure?'<iframe title="研究三数据下载与进度" src="/study3/researcher/" style="width:100%;height:800px;border:1px solid #aaa;border-radius:8px" referrerpolicy="no-referrer"></iframe><p><a href="/study3/researcher/">单独打开研究三管理</a></p>':'<p>为保护管理密码与下载数据，研究三管理仅在加密页面开放；原研究一、二管理功能保持。</p><p><a href="https://'+new URL(origin).host+'/admin">打开加密的统一管理页</a></p><p>若打不开，请检查服务器TCP443公网通路；不能通过明文登录替代。</p>'}</div>`;
+ const cardStart=original.lastIndexOf('<div class="card">',original.indexOf(marker));if(cardStart<0)throw Error('原管理页分区无法定位');
+ let html=original.slice(0,cardStart)+study3+original.slice(cardStart);
+ html=html.replace('<title>CRTT 数据导出</title>','<title>毕业论文 · 统一下载管理</title>')
+  .replace('<h1>CRTT 数据导出（管理员）</h1>','<h1>研究一、研究二下载</h1><p><a href="/studies/">返回三个研究入口</a> · <a href="#study3-management">研究三下载</a></p>')
+  .replace(/<script>/g,'<script nonce="'+nonce+'">');
+ return {html,headers:{'Content-Type':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Content-Security-Policy':`default-src 'self'; script-src 'self' 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; frame-src 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; base-uri 'none'`}};
+}
