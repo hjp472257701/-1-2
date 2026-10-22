@@ -40,12 +40,17 @@ export async function createCloudPreview({origin,dataDir,maxAssignments=200,star
   const reply=(status,value,type='application/json; charset=utf-8')=>{res.writeHead(status,{...noStore,'Content-Type':type});res.end(type.startsWith('application/json')?JSON.stringify(value):value);};
   try{
    if(req.headers.host!==publicURL.host)return reply(403,{error:'访问域名不匹配'});
-   if(req.headers.origin&&req.headers.origin!==publicURL.origin)return reply(403,{error:'拒绝跨站请求'});
+   // This service is loopback-only; nginx sets (overwrites) the transport header.
+   // Keep legacy HTTP virtual previews usable until the cloud firewall permits HTTPS.
+   const legacyHTTP=publicURL.protocol==='https:'&&req.headers['x-forwarded-proto']==='http';
+   const requestOrigin=legacyHTTP?'http://'+publicURL.host:publicURL.origin;
+   if(req.headers.origin&&req.headers.origin!==requestOrigin)return reply(403,{error:'拒绝跨站请求'});
    if((req.url??'').includes('?')||(req.url??'').includes('#')||(req.url??'').includes('%'))return reply(400,{error:'请使用不带参数的测试链接'});
    const url=new URL(req.url,publicURL.origin);
    if(url.pathname==='/study3'&&req.method==='GET'){res.writeHead(302,{...noStore,Location:CLOUD_BASE});return res.end();}
    if(!url.pathname.startsWith(CLOUD_BASE))return reply(404,{error:'只提供研究三测试入口'});
    const tail=url.pathname.slice(CLOUD_BASE.length);
+   if(legacyHTTP&&tail.startsWith('researcher/'))return reply(426,{error:'研究者管理必须使用HTTPS，请先确认服务器443端口已开放'});
    if(await researcher(req,res,tail))return;
    if(tail==='health'&&req.method==='GET')return reply(200,{ok:true,study:3,mode:'cloud_technical_preview',formal_ready:false,model:'v0.9',copy:'v47'});
    if(!tail&&req.method==='GET')return reply(200,hub(),'text/html; charset=utf-8');
@@ -56,7 +61,7 @@ export async function createCloudPreview({origin,dataDir,maxAssignments=200,star
    if(req.method==='POST'&&(!isAPI||!['start','action','leave'].includes(api)))return reply(405,{error:'不支持此操作'});
    let body='';
    if(req.method==='POST'){
-    if(req.headers.origin!==publicURL.origin||!/^application\/json(?:;|$)/i.test(req.headers['content-type']??''))return reply(403,{error:'提交须同源JSON请求'});
+    if(req.headers.origin!==requestOrigin||!/^application\/json(?:;|$)/i.test(req.headers['content-type']??''))return reply(403,{error:'提交须同源JSON请求'});
     let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>20000)return reply(413,{error:'提交内容过大'});body+=chunk.toString();}
     const input=JSON.parse(body);
     if(api==='start'){
@@ -76,7 +81,7 @@ export async function createCloudPreview({origin,dataDir,maxAssignments=200,star
     incoming.on('end',()=>{
      let content=Buffer.concat(chunks),outHeaders={...noStore,'Content-Type':incoming.headers['content-type']??'application/json; charset=utf-8'};
      if(incoming.headers['content-disposition'])outHeaders['Content-Disposition']=incoming.headers['content-disposition'];
-     if(incoming.headers['set-cookie'])outHeaders['Set-Cookie']=incoming.headers['set-cookie'].map(x=>x.replace(/^s3preview=/,'s3cloudpreview=').replace('Path=/;','Path=/study3/;')+(publicURL.protocol==='https:'?'; Secure':''));
+     if(incoming.headers['set-cookie'])outHeaders['Set-Cookie']=incoming.headers['set-cookie'].map(x=>x.replace(/^s3preview=/,'s3cloudpreview=').replace('Path=/;','Path=/study3/;')+(publicURL.protocol==='https:'&&!legacyHTTP?'; Secure':''));
      if(isPage||isFile&&tail.endsWith('.mjs'))content=Buffer.from(cloudSource(isPage?'index.html':tail,content.toString('utf8')));
      res.writeHead(incoming.statusCode,outHeaders);res.end(content);
     });
