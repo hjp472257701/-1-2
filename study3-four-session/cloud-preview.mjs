@@ -5,6 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {realpathSync} from 'node:fs';
 import {makeServer} from './server.mjs';
 import {ENTRIES} from './entry.mjs';
+import {researcherHandler} from './researcher-export.mjs';
 export const CLOUD_BASE='/study3/';
 const noStore={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"};
 const publicFiles=new Set(['app.mjs','entry.mjs','response-presentation.mjs','workbench.mjs','readable-training.mjs','application-training.mjs','source-training.mjs','reviewed-courses.mjs','source-progress.mjs','styles.css']);
@@ -32,6 +33,7 @@ export async function createCloudPreview({origin,dataDir,maxAssignments=200,star
  if(!['http:','https:'].includes(publicURL.protocol)||publicURL.username||publicURL.password||publicURL.pathname!=='/'||publicURL.search||publicURL.hash)throw Error('必须设置不带路径和凭据的公开origin');
  if(!dataDir)throw Error('云端必须指定独立数据目录');
  const backend=makeServer({dataDir});
+ const researcher=researcherHandler({store:backend.store,origin:publicURL.origin,dataDir});
  await new Promise((yes,no)=>{backend.server.once('error',no);backend.server.listen(0,'127.0.0.1',yes);});
  const port=backend.server.address().port,internalOrigin='http://127.0.0.1:'+port,buckets=new Map();
  const server=createServer(async(req,res)=>{
@@ -44,6 +46,7 @@ export async function createCloudPreview({origin,dataDir,maxAssignments=200,star
    if(url.pathname==='/study3'&&req.method==='GET'){res.writeHead(302,{...noStore,Location:CLOUD_BASE});return res.end();}
    if(!url.pathname.startsWith(CLOUD_BASE))return reply(404,{error:'只提供研究三测试入口'});
    const tail=url.pathname.slice(CLOUD_BASE.length);
+   if(await researcher(req,res,tail))return;
    if(tail==='health'&&req.method==='GET')return reply(200,{ok:true,study:3,mode:'cloud_technical_preview',formal_ready:false,model:'v0.9',copy:'v47'});
    if(!tail&&req.method==='GET')return reply(200,hub(),'text/html; charset=utf-8');
    const api=tail.startsWith('api/preview/')?tail.slice(12):null;

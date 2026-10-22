@@ -1,0 +1,8 @@
+const $=s=>document.querySelector(s);
+async function call(path,data){const r=await fetch('/study3/researcher/'+path,{method:data?'POST':'GET',credentials:'same-origin',headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined});const x=await r.json();if(!r.ok)throw Error(x.error??'操作未完成');return x;}
+async function load(){try{const x=await call('summary');$('#login').hidden=true;$('#dashboard').hidden=false;$('#message').textContent='';$('#counts').textContent=`测试身份 ${x.manifest.participants} 个，已进入环节 ${x.manifest.entry_records} 条；导出会包含所有已保存记录。`;
+ const table=document.createElement('table'),head=document.createElement('tr');for(const name of ['研究编码','组别','环节','状态','已答','跳答']){const th=document.createElement('th');th.textContent=name;head.append(th);}table.append(head);
+ for(const row of x.overview){const tr=document.createElement('tr');for(const value of [row.research_id,row.group,({pre:'前测',mid:'中测',post:'后测','practice-1':'训练一','practice-2':'训练二','practice-3':'训练三','practice-4':'训练四'})[row.entry],({not_started:'未进入',in_progress:'进行中',completed:'已完成'})[row.status],row.answered,row.skipped]){const td=document.createElement('td');td.textContent=value;tr.append(td);}table.append(tr);}$('#overview').replaceChildren(table);
+ }catch(e){$('#login').hidden=false;$('#dashboard').hidden=true;$('#message').textContent=e.message;}}
+$('#login').onsubmit=async e=>{e.preventDefault();try{await call('login',{password:new FormData(e.target).get('password')});e.target.reset();await load();}catch(e){$('#message').textContent=e.message;}};
+$('#refresh').onclick=load;$('#logout').onclick=async()=>{await call('logout',{});await load();};await load();

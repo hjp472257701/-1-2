@@ -1,0 +1,5 @@
+[Unit]
+Description=Renew Study 3 IP TLS certificate
+[Service]
+Type=oneshot
+ExecStart=/opt/study3-certbot/bin/certbot renew --cert-name study3-ip --quiet --deploy-hook "/usr/sbin/nginx -t && /usr/bin/systemctl reload nginx"
