@@ -9,6 +9,7 @@ const script=html=>[...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(
 for(const secure of [false,true]){
  const html=curl((secure?'https://'+ip:'http://127.0.0.1')+'/admin',secure?tls:['-H','Host: '+ip]);
  assert.deepEqual(script(html),script(original));assert.match(html,/study3-management/);
+ for(const entry of ['pre','practice-1','practice-2','practice-3','practice-4','mid','post'])assert.ok(html.includes('href="/study3/try/'+entry+'/"'),entry);
  for(const [,id] of original.matchAll(/id="(download[^"]+)"/g))assert.equal((html.match(new RegExp('id="'+id+'"','g'))??[]).length,1);
  if(secure)assert.match(html,/src="\/study3\/researcher\/"/);else assert.doesNotMatch(html,/<iframe/);
 }
