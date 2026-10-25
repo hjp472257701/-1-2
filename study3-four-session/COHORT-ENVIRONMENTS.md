@@ -30,10 +30,34 @@ or destructive online withdrawal endpoint. Stop anytime; controlled withdrawal
 is handled by contacting organizer. Any intention-to-treat/missed-class protocol
 decision needs confirmation before FORMAL activation; never fabricate missed data.
 
-Default: both closed. FORMAL enabled=true is rejected by code, formal codes cannot
+Default deployment template: both closed. User confirmed on 2026-10-25 that
+questions/withdrawal go through the organizing teacher and data are intended
+to be retained until 2027. The pilot-open.env profile permits PILOT only after
+that notice is deployed and accepted. No exact deletion date or automatic purge
+is implied. FORMAL enabled=true is rejected by code, formal codes cannot
 be issued by setup. Formal recruitment, sample size/inclusion, retention and
 contact/consent procedures remain separate acceptance requirements. Pilot draft
 participation text and protocol must be reviewed before its collection switch.
+
+Latest 2026-10-25 authorization supersedes the preceding closed-stage note:
+the user explicitly requested BOTH PILOT and FORMAL to be opened now, with
+actual distribution at different planned dates. cohort-server now accepts an
+enabled flag for either environment. open-cohorts.sh installs the two explicit
+open profiles; the original generic installer still uses safe closed defaults.
+Questions go via the organizing teacher. Student-facing contact text is exactly
+“如果有疑问，可以告知老师，由老师帮忙反馈。” Retention until 2027 is a researcher
+record, not a fabricated exact deletion date or scheduled purge. Participation
+text is generic to both environments and is recorded per new participant.
+
+New group allocation (not old technical groups): ordered by first completed
+baseline, each pair is cryptographically randomized AB or BA; allocation and
+the final baseline response are committed in one SQLite transaction. Every even
+number of allocations has equal group counts; an incomplete pair differs by 1.
+This is random permuted-pair block allocation, NOT independent Bernoulli sampling
+and NOT fixed alternation by student number. Persisted groups never change on
+refresh/restart. Completer/valid-sample counts may differ after dropout and are
+not force-balanced or silently excluded. Report this actual method in the thesis.
+Code pools (10 PILOT, 200 FORMAL) are capacity only, not sample-size calculations.
 Credentials are not in code. New management may reuse the existing Study 3 secret
 by copying only its password verifier into each private data directory; sessions
 and cookies remain path-scoped and independent. Never reuse Study 1/2 tokens.

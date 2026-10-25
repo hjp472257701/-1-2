@@ -1,5 +1,5 @@
 import {DatabaseSync} from 'node:sqlite';
-import {randomBytes,createHmac,randomUUID,createHash} from 'node:crypto';
+import {randomBytes,randomInt,createHmac,randomUUID,createHash} from 'node:crypto';
 import {mkdirSync,readFileSync,writeFileSync,existsSync,chmodSync,readdirSync,realpathSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {fresh,act,score} from './model-v9.mjs';
@@ -7,10 +7,10 @@ import {CONTENT_V9 as C,ROOT} from './server.mjs';
 import {annotatePresentation} from './response-presentation.mjs';
 import {entryById,currentEntry,assertEntryAction} from './entry.mjs';
 import {entryStatus} from './cohort-export.mjs';
-import {PARTICIPATION} from './cohort-client.mjs';
+import {PARTICIPATION,PARTICIPATION_VERSION} from './cohort-client.mjs';
 export const DAY=86400000;
 export const PROTOCOLS={PILOT:{version:'S3-PILOT-COMPRESSED-7D-v1',first_days:1,offsets:[0,2,4,5],followup_days:14,description:'压缩预测试：前测后至少1天开始，四课在首课计划日第1/3/5/6天；末课14天后追踪，不等同正式剂量'},FORMAL:{version:'S3-FORMAL-SPACED-4-v1',first_days:2,offsets:[0,3,7,10],followup_days:14,description:'正式待开放：前测后至少2天首课，第1/4/8/11天四课，实际末课14天后追踪'}};
-export const CONSENT_VERSION='S3-PILOT-PARTICIPATION-v1';
+export const CONSENT_VERSION=PARTICIPATION_VERSION;
 export function materialDigest(){return createHash('sha256').update(JSON.stringify(C)).digest('hex');}
 export function openCohortStore({dataDir,role,enabled=false,clock=()=>Date.now()}){
  if(!PROTOCOLS[role])throw Error('invalid cohort role');
@@ -21,13 +21,14 @@ export function openCohortStore({dataDir,role,enabled=false,clock=()=>Date.now()
  else{if(readdirSync(path).some(n=>/sqlite|identity-key/.test(n)))throw Error('目录存在未核验的旧数据，拒绝自动迁移');writeFileSync(metaPath,JSON.stringify(meta),{flag:'wx',mode:0o600});}
  const keyPath=join(path,'cohort-key');if(!existsSync(keyPath))writeFileSync(keyPath,randomBytes(32),{flag:'wx',mode:0o600});const key=readFileSync(keyPath);if(key.length!==32)throw Error('invalid key');
  const dbPath=join(path,'study3.sqlite'),db=new DatabaseSync(dbPath);chmodSync(dbPath,0o600);db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS codes(lookup TEXT PRIMARY KEY, pid TEXT UNIQUE); CREATE TABLE IF NOT EXISTS participants(id TEXT PRIMARY KEY,revision INTEGER NOT NULL,state TEXT NOT NULL)');
+ db.exec("CREATE TABLE IF NOT EXISTS allocations(seq INTEGER PRIMARY KEY AUTOINCREMENT,pid TEXT NOT NULL UNIQUE,arm TEXT NOT NULL CHECK(arm IN ('A','B')))");
  const hash=n=>createHmac('sha256',key).update(role+'\0'+n).digest('hex');
  const normalize=n=>{if(typeof n!=='string')throw Error('请填写组织者发给你的测试号码');const x=n.normalize('NFKC').trim().toUpperCase();if(!new RegExp('^'+role+'-[A-F0-9]{24}$').test(x))throw Error('请使用本次活动专用号码，不填写学号或旧技术测试号码');return x;};
  const load=id=>{const row=db.prepare('SELECT state FROM participants WHERE id=?').get(id);if(!row)throw Error('记录不存在');return JSON.parse(row.state);};
  const all=()=>db.prepare('SELECT state FROM participants ORDER BY id').all().map(r=>JSON.parse(r.state));
  const save=(before,next)=>{const r=db.prepare('UPDATE participants SET revision=?,state=? WHERE id=? AND revision=?').run(next.revision,JSON.stringify(next),next.id,before.revision);if(r.changes!==1)throw Error('另一窗口已经保存，请刷新；原答未被覆盖');return next;};
  const store={role,enabled,protocol:PROTOCOLS[role],db,load,all,close:()=>db.close(),
-  issueCodes(count){if(!Number.isInteger(count)||count<1||count>500)throw Error('invalid count');if(role==='FORMAL')throw Error('正式招募号码尚未开放签发');const codes=[];db.exec('BEGIN IMMEDIATE');try{for(let i=0;i<count;i++){const n=role+'-'+randomBytes(12).toString('hex').toUpperCase();db.prepare('INSERT INTO codes VALUES(?,NULL)').run(hash(n));codes.push(n);}db.exec('COMMIT');return codes;}catch(e){db.exec('ROLLBACK');throw e;}},
+  issueCodes(count){if(!Number.isInteger(count)||count<1||count>500)throw Error('invalid count');if(role==='FORMAL'&&!enabled)throw Error('正式入口关闭，不能签发正式号码');const codes=[];db.exec('BEGIN IMMEDIATE');try{for(let i=0;i<count;i++){const n=role+'-'+randomBytes(12).toString('hex').toUpperCase();db.prepare('INSERT INTO codes VALUES(?,NULL)').run(hash(n));codes.push(n);}db.exec('COMMIT');return codes;}catch(e){db.exec('ROLLBACK');throw e;}},
   enter(input){
    if(!enabled)throw Error('本入口尚未开放，请等待组织者通知');const e=entryById(input.entry_id);if(!e)throw Error('请使用组织者发给你的具体环节链接');
    const code=normalize(input.test_number),lookup=hash(code),row=db.prepare('SELECT pid FROM codes WHERE lookup=?').get(lookup);if(!row)throw Error('测试号码不在本次名单，请核对；未新建或更换记录');
@@ -58,7 +59,18 @@ export function openCohortStore({dataDir,role,enabled=false,clock=()=>Date.now()
    if(!e)throw Error('缺少具体环节入口');assertEntryAction(s,e,a);
    if(a.type==='interval_end'&&clock()-s.interval.started_ms<180000)throw Error('共同间隔尚未结束，请按页面继续');
    const next=annotatePresentation(s,act(structuredClone(s),a,C,clock()),a,C);next.revision++;
-   if(!s.baseline_at&&next.baseline_at){next.assignment={...next.assignment,method:'server_crypto_equal_probability_'+role.toLowerCase()};next.first_course_scheduled_at=new Date(Date.parse(next.baseline_at)+store.protocol.first_days*DAY).toISOString();}
+   if(!s.baseline_at&&next.baseline_at){
+    // New cohort allocations only: each pair randomly AB or BA, committed with
+    // the first baseline completion. No changes to old technical assignments.
+    db.exec('BEGIN IMMEDIATE');try{
+     const last=db.prepare('SELECT seq,arm FROM allocations ORDER BY seq DESC LIMIT 1').get();
+     const arm=!last||last.seq%2===0?(randomInt(2)===0?'A':'B'):(last.arm==='A'?'B':'A');
+     const result=db.prepare('INSERT INTO allocations(pid,arm) VALUES(?,?)').run(s.id,arm);
+     next.arm=arm;next.assignment={method:'server_crypto_random_permuted_pairs_1to1_v1',at:new Date(clock()).toISOString(),sequence:Number(result.lastInsertRowid),pair:Math.ceil(Number(result.lastInsertRowid)/2),allocation_basis:'order_of_first_completed_baseline',environment:role};
+     next.first_course_scheduled_at=new Date(Date.parse(next.baseline_at)+store.protocol.first_days*DAY).toISOString();
+     next.data_role=role;next.not_research_data=false;const saved=save(s,next);db.exec('COMMIT');return saved;
+    }catch(e){db.exec('ROLLBACK');throw e;}
+   }
    if(next.stage==='interval'&&!next.entry_started.mid)next.entry_started.mid=new Date(clock()).toISOString();
    next.data_role=role;next.not_research_data=false;return save(s,next);
   },

@@ -12,7 +12,7 @@ import {ENTRIES,entryById} from './entry.mjs';
 const files=new Set(['entry.mjs','app.mjs','response-presentation.mjs','workbench.mjs','readable-training.mjs','application-training.mjs','source-training.mjs','reviewed-courses.mjs','source-progress.mjs','styles.css']);
 export function createCohortServer({origin,dataDir,role,enabled=false,clock}={}){
  const url=new URL(origin);if(url.protocol!=='https:'||url.pathname!=='/'||url.search||url.hash||url.username||url.password)throw Error('只允许无路径、无凭据的HTTPS origin');
- if(!['PILOT','FORMAL'].includes(role)||role==='FORMAL'&&enabled)throw Error('正式收数未授权开放；本版本只能准备关闭状态的正式环境');
+ if(!['PILOT','FORMAL'].includes(role))throw Error('无法识别数据环境');
  const base='/study3/'+role.toLowerCase()+'/',store=openCohortStore({dataDir,role,enabled,clock}),sessions=new Map(),buckets=new Map();
  const researcher=researcherHandler({origin,dataDir,base,role,snapshot:()=>cohortSnapshot(store)});
  const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"};
