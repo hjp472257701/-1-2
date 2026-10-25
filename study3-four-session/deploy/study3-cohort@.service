@@ -1,0 +1,27 @@
+[Unit]
+Description=Study 3 isolated cohort %i (independent data)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/var/www/study3-preview/current
+EnvironmentFile=/etc/study3-%i.conf
+ExecStart=/opt/study3-runtime/node-v24.22.0-linux-x64/bin/node /var/www/study3-preview/current/cohort-server.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/study3-%i
+InaccessiblePaths=/var/www/thesis-app /var/lib/study3-preview
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=256M
+CPUQuota=50%
+LimitNOFILE=2048
+
+[Install]
+WantedBy=multi-user.target

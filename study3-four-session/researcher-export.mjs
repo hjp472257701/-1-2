@@ -49,7 +49,7 @@ export function exportSnapshot(store){
  const full={manifest,assignments,records:records.map(s=>previewView(s))};
  return {manifest,overview:overview.slice(1).map(r=>Object.fromEntries(overview[0].map((k,i)=>[k,r[i]]))),files:{'overview.csv':csv(overview),'responses-long.csv':csv(long),'responses-wide.csv':csv(wide),'training.csv':csv(training),'trials.csv':csv(trials),'events.csv':csv(events),'items.csv':csv(items),'complete-records.json':JSON.stringify(full,null,2),'README.txt':'研究三技术测试导出，非正式研究样本。\n同一research_id关联七入口，group为服务端固定组别；未进入环节标记not_started，不补答。\nCSV为UTF-8 BOM；responses-long为逐题数据；wide保留各波次原始键；training保留所有首次/修改/应用记录；trials区分练习与七轮任务。\n完整JSON保留原状态和原分数中的DEMO标记，外层TECHNICAL_PREVIEW才是本环境身份，不转换为正式数据。\n未导出测试号码、身份密钥、身份查找哈希或研究一二数据。自由文本按CSV公式防护转义，原文见JSON。\nmanifest.json记录导出时间和数量。'}};
 }
-export function researcherHandler({store,origin,dataDir}){
+export function researcherHandler({store,origin,dataDir,base='/study3/',snapshot=()=>exportSnapshot(store),role=ROLE}){
  const sessions=new Map();let tries=0,until=0;
  const secure=new URL(origin).protocol==='https:';
  const audit=action=>appendFileSync(join(dataDir,'researcher-audit.jsonl'),JSON.stringify({at:new Date().toISOString(),action})+'\n',{mode:0o600});
@@ -60,20 +60,20 @@ export function researcherHandler({store,origin,dataDir}){
   const token=(req.headers.cookie??'').split(';').map(x=>x.trim()).find(x=>x.startsWith('s3researcher='))?.slice(13),key=token?createHash('sha256').update(token).digest('hex'):null;
   const authenticated=key&&sessions.get(key)>Date.now();
   for(const [k,t] of sessions)if(t<=Date.now())sessions.delete(k);
-  if(req.method==='GET'&&tail==='researcher/')send(200,readFileSync(new URL('./researcher.html',import.meta.url)),'text/html; charset=utf-8',{'X-Frame-Options':'SAMEORIGIN','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'self'; form-action 'self'; object-src 'none'; base-uri 'none'"});
-  else if(req.method==='GET'&&tail==='researcher/app.mjs')send(200,readFileSync(new URL('./researcher-app.mjs',import.meta.url)),'text/javascript; charset=utf-8');
+  if(req.method==='GET'&&tail==='researcher/')send(200,readFileSync(new URL('./researcher.html',import.meta.url),'utf8').replaceAll('/study3/',base).replaceAll('技术测试',role===ROLE?'技术测试':role==='PILOT'?'预测试':'正式研究').replace('测试数据不得作为正式样本。',role===ROLE?'测试数据不得作为正式样本。':role==='PILOT'?'预测试记录单独保存，不自动纳入正式样本。':'正式入口默认关闭，开放需另行确认。'),'text/html; charset=utf-8',{'X-Frame-Options':'SAMEORIGIN','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'self'; form-action 'self'; object-src 'none'; base-uri 'none'"});
+  else if(req.method==='GET'&&tail==='researcher/app.mjs')send(200,readFileSync(new URL('./researcher-app.mjs',import.meta.url),'utf8').replaceAll('/study3/',base),'text/javascript; charset=utf-8');
   else if(req.method==='POST'&&['researcher/login','researcher/logout'].includes(tail)){
    if(req.headers.origin!==origin||!/^application\/json(?:;|$)/i.test(req.headers['content-type']??'')){send(403,{error:'拒绝跨站登录'});return true;}
-   if(tail.endsWith('/logout')){sessions.delete(key);send(200,{ok:true},undefined,{'Set-Cookie':'s3researcher=; Path=/study3/researcher/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'});return true;}
+   if(tail.endsWith('/logout')){sessions.delete(key);send(200,{ok:true},undefined,{'Set-Cookie':'s3researcher=; Path='+base+'researcher/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'});return true;}
    let body='',size=0;for await(const b of req){size+=b.length;if(size>2048){send(413,{error:'请求过大'});return true;}body+=b;}
    if(Date.now()>until){tries=0;until=Date.now()+900000;}if(++tries>10){send(429,{error:'尝试过多，请15分钟后再试'});return true;}
    let password;try{password=JSON.parse(body).password;}catch{send(400,{error:'请求无效'});return true;}
    let config;try{config=JSON.parse(readFileSync(join(dataDir,'researcher-password.json'),'utf8'));}catch{send(503,{error:'研究者密码尚未配置'});return true;}
    if(typeof password!=='string'||password.length<12||password.length>256||!timingSafeEqual(scryptSync(password,config.salt,32),Buffer.from(config.hash,'hex'))){audit('login_failed');send(401,{error:'密码不正确'});return true;}
-   const token=randomBytes(32).toString('base64url');sessions.set(createHash('sha256').update(token).digest('hex'),Date.now()+1800000);audit('login_success');send(200,{ok:true},undefined,{'Set-Cookie':'s3researcher='+token+'; Path=/study3/researcher/; HttpOnly; Secure; SameSite=Strict; Max-Age=1800'});
+   const token=randomBytes(32).toString('base64url');sessions.set(createHash('sha256').update(token).digest('hex'),Date.now()+1800000);audit('login_success');send(200,{ok:true},undefined,{'Set-Cookie':'s3researcher='+token+'; Path='+base+'researcher/; HttpOnly; Secure; SameSite=Strict; Max-Age=1800'});
   }else if(!authenticated)send(401,{error:'请先输入研究者密码'});
-  else if(req.method==='GET'&&tail==='researcher/summary'){const x=exportSnapshot(store);send(200,{manifest:x.manifest,overview:x.overview});}
-  else if(req.method==='GET'&&['researcher/export.zip','researcher/export.json'].includes(tail)){const x=exportSnapshot(store);audit(tail.endsWith('.zip')?'export_zip':'export_json');if(tail.endsWith('.zip'))send(200,zipFiles({...x.files,'manifest.json':JSON.stringify(x.manifest,null,2)}),'application/zip',{'Content-Disposition':'attachment; filename="study3-TECHNICAL-PREVIEW.zip"'});else send(200,x.files['complete-records.json'],'application/json; charset=utf-8',{'Content-Disposition':'attachment; filename="study3-TECHNICAL-PREVIEW.json"'});}
+  else if(req.method==='GET'&&tail==='researcher/summary'){const x=snapshot();send(200,{manifest:x.manifest,overview:x.overview});}
+  else if(req.method==='GET'&&['researcher/export.zip','researcher/export.json'].includes(tail)){const x=snapshot(),label=role===ROLE?'TECHNICAL-PREVIEW':role;audit(tail.endsWith('.zip')?'export_zip':'export_json');if(tail.endsWith('.zip'))send(200,zipFiles({...x.files,'manifest.json':JSON.stringify(x.manifest,null,2)}),'application/zip',{'Content-Disposition':'attachment; filename="study3-'+label+'.zip"'});else send(200,x.files['complete-records.json'],'application/json; charset=utf-8',{'Content-Disposition':'attachment; filename="study3-'+label+'.json"'});}
   else send(404,{error:'研究者接口不存在'});
   return true;
  };

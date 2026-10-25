@@ -17,6 +17,7 @@ test('统一管理保留原全部下载与邀请脚本，不连接数据库或�
  for(const id of [...original.matchAll(/id="(download[^"]+)"/g)].map(x=>x[1]))assert.equal((x.html.match(new RegExp('id="'+id+'"','g'))??[]).length,1,id);
  assert.match(x.html,/src="\/study3\/researcher\/"/);assert.match(x.html,/统一下载管理/);assert.match(x.headers['Content-Security-Policy'],/nonce-/);assert.doesNotMatch(x.headers['Content-Security-Policy'],/script-src[^;]*unsafe-inline/);
  assert.equal((x.html.match(/id="study3-management"/g)??[]).length,1);
+ for(const env of ['pilot','formal']){assert.match(x.html,new RegExp('src="/study3/'+env+'/researcher/"'));for(const id of ['pre','practice-1','practice-2','practice-3','practice-4','mid','post'])assert.match(x.html,new RegExp('href="/study3/'+env+'/'+id+'/"'));}assert.match(x.html,/正式研究（尚未开放）/);
  const http=unifiedAdmin(original,{secure:false,origin:'https://study3.test'});assert.doesNotMatch(http.html,/<iframe/);assert.match(http.html,/https:\/\/study3.test\/admin/);assert.deepEqual(script(http.html),script(original));
  for(const page of [x.html,http.html]){for(const entry of ['pre','practice-1','practice-2','practice-3','practice-4','mid','post'])assert.equal((page.match(new RegExp('href="/study3/try/'+entry+'/"','g'))??[]).length,1,entry);assert.match(page,/正式收数未开放/);assert.match(page,/aria-label="研究三七个测试入口"/);}
  assert.throws(()=>unifiedAdmin('<html>unexpected</html>',{secure:true,origin:'https://study3.test'}));
