@@ -22,22 +22,37 @@ export function openCohortStore({dataDir,role,enabled=false,clock=()=>Date.now()
  const keyPath=join(path,'cohort-key');if(!existsSync(keyPath))writeFileSync(keyPath,randomBytes(32),{flag:'wx',mode:0o600});const key=readFileSync(keyPath);if(key.length!==32)throw Error('invalid key');
  const dbPath=join(path,'study3.sqlite'),db=new DatabaseSync(dbPath);chmodSync(dbPath,0o600);db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS codes(lookup TEXT PRIMARY KEY, pid TEXT UNIQUE); CREATE TABLE IF NOT EXISTS participants(id TEXT PRIMARY KEY,revision INTEGER NOT NULL,state TEXT NOT NULL)');
  db.exec("CREATE TABLE IF NOT EXISTS allocations(seq INTEGER PRIMARY KEY AUTOINCREMENT,pid TEXT NOT NULL UNIQUE,arm TEXT NOT NULL CHECK(arm IN ('A','B')))");
+ db.exec('CREATE TABLE IF NOT EXISTS devices(token_hash TEXT PRIMARY KEY,pid TEXT NOT NULL,expires INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS recovery(token_hash TEXT PRIMARY KEY,pid TEXT NOT NULL,expires INTEGER NOT NULL,used INTEGER NOT NULL DEFAULT 0)');
  const hash=n=>createHmac('sha256',key).update(role+'\0'+n).digest('hex');
- const normalize=n=>{if(typeof n!=='string')throw Error('请填写组织者发给你的测试号码');const x=n.normalize('NFKC').trim().toUpperCase();if(!new RegExp('^'+role+'-[A-F0-9]{24}$').test(x))throw Error('请使用本次活动专用号码，不填写学号或旧技术测试号码');return x;};
+ const normalize=n=>{if(typeof n!=='string')throw Error('测试号码请填本人学号');const x=n.normalize('NFKC').trim().toUpperCase();if(!/^[A-Z0-9]{4,24}$/.test(x)&&!new RegExp('^'+role+'-[A-F0-9]{24}$').test(x))throw Error('测试号码请填4至24位数字或英文字母组成的学号，保留开头的零，不填姓名');return x;};
+ const numberLookup=n=>hash(/^[A-Z0-9]{4,24}$/.test(n)?'STUDENT-NUMBER\0'+n:n);
+ const tokenHash=t=>typeof t==='string'&&/^[A-Za-z0-9_-]{43}$/.test(t)?createHash('sha256').update(t).digest('hex'):null;
  const load=id=>{const row=db.prepare('SELECT state FROM participants WHERE id=?').get(id);if(!row)throw Error('记录不存在');return JSON.parse(row.state);};
  const all=()=>db.prepare('SELECT state FROM participants ORDER BY id').all().map(r=>JSON.parse(r.state));
  const save=(before,next)=>{const r=db.prepare('UPDATE participants SET revision=?,state=? WHERE id=? AND revision=?').run(next.revision,JSON.stringify(next),next.id,before.revision);if(r.changes!==1)throw Error('另一窗口已经保存，请刷新；原答未被覆盖');return next;};
  const store={role,enabled,protocol:PROTOCOLS[role],db,load,all,close:()=>db.close(),
   issueCodes(count){if(!Number.isInteger(count)||count<1||count>500)throw Error('invalid count');if(role==='FORMAL'&&!enabled)throw Error('正式入口关闭，不能签发正式号码');const codes=[];db.exec('BEGIN IMMEDIATE');try{for(let i=0;i<count;i++){const n=role+'-'+randomBytes(12).toString('hex').toUpperCase();db.prepare('INSERT INTO codes VALUES(?,NULL)').run(hash(n));codes.push(n);}db.exec('COMMIT');return codes;}catch(e){db.exec('ROLLBACK');throw e;}},
-  enter(input){
+  deviceOwner(token){const h=tokenHash(token);if(!h)return null;const r=db.prepare('SELECT pid FROM devices WHERE token_hash=? AND expires>?').get(h,clock());return r?.pid??null;},
+  grantDevice(pid,token){if(!tokenHash(token))throw Error('设备凭证无效');load(pid);db.prepare('INSERT INTO devices VALUES(?,?,?)').run(tokenHash(token),pid,clock()+60*DAY);},
+  lookupNumber(number){const r=db.prepare('SELECT pid FROM codes WHERE lookup=?').get(numberLookup(normalize(number)));return r?.pid??null;},
+  issueRecovery(number){const pid=store.lookupNumber(number);if(!pid)throw Error('该号码没有记录');const token=randomBytes(32).toString('base64url');db.prepare('INSERT INTO recovery VALUES(?,?,?,0)').run(tokenHash(token),pid,clock()+15*60000);return token;},
+  enter(input,{devicePid=null}={}){
    if(!enabled)throw Error('本入口尚未开放，请等待组织者通知');const e=entryById(input.entry_id);if(!e)throw Error('请使用组织者发给你的具体环节链接');
-   const code=normalize(input.test_number),lookup=hash(code),row=db.prepare('SELECT pid FROM codes WHERE lookup=?').get(lookup);if(!row)throw Error('测试号码不在本次名单，请核对；未新建或更换记录');
+   const code=normalize(input.test_number),numeric=/^[A-Z0-9]{4,24}$/.test(code),lookup=numberLookup(code);let row=db.prepare('SELECT pid FROM codes WHERE lookup=?').get(lookup);if(!numeric&&!row)throw Error('测试号码不在本次名单，请核对；未新建或更换记录');
    if(input.confirm_number!==true)throw Error('请先确认号码无误，之后每次均使用同号');
-   if(row.pid)return {state:load(row.pid),created:false};
+   if(row?.pid){
+    if(numeric&&devicePid!==row.pid){
+     const h=tokenHash(input.recovery),grant=h?db.prepare('SELECT pid FROM recovery WHERE token_hash=? AND expires>? AND used=0').get(h,clock()):null;
+     if(!grant||grant.pid!==row.pid)throw Error('这个学号已有记录。请用首次填写时的设备和同一浏览器继续；换设备或清除浏览器数据后，请联系老师协助恢复，不会新建或覆盖回答。');
+     db.exec('BEGIN IMMEDIATE');try{const used=db.prepare('UPDATE recovery SET used=1 WHERE token_hash=? AND used=0').run(h);if(used.changes!==1)throw Error('恢复链接已使用，请联系老师');db.prepare('DELETE FROM devices WHERE pid=?').run(row.pid);db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}
+    }
+    return {state:load(row.pid),created:false};
+   }
+   if(numeric&&devicePid)throw Error('当前浏览器已关联其他记录，请先核对原学号；确需多人共用设备或改错号时，请联系老师处理。');
    if(e.id!=='pre')throw Error('这个号码尚未做前测，请先使用前测链接；没有补造任何记录');
    if(input.consent!==CONSENT_VERSION)throw Error('请先阅读参加说明并确认自愿参加');
    const s=fresh();s.id=role+'-'+randomUUID();s.created_at=new Date(clock()).toISOString();s.data_role=role;s.not_research_data=false;s.environment=role;s.protocol=PROTOCOLS[role];s.material_sha256=meta.material_sha256;s.entry_started={pre:s.created_at};s.consent={version:CONSENT_VERSION,at:s.created_at,text:PARTICIPATION,text_sha256:createHash('sha256').update(PARTICIPATION).digest('hex')};
-   db.exec('BEGIN IMMEDIATE');try{db.prepare('INSERT INTO participants VALUES(?,0,?)').run(s.id,JSON.stringify(s));const r=db.prepare('UPDATE codes SET pid=? WHERE lookup=? AND pid IS NULL').run(s.id,lookup);if(r.changes!==1)throw Error('记录同时被另一窗口建立，请重新进入');db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}return {state:s,created:true};
+   db.exec('BEGIN IMMEDIATE');try{if(!row)db.prepare('INSERT INTO codes VALUES(?,NULL)').run(lookup);db.prepare('INSERT INTO participants VALUES(?,0,?)').run(s.id,JSON.stringify(s));const r=db.prepare('UPDATE codes SET pid=? WHERE lookup=? AND pid IS NULL').run(s.id,lookup);if(r.changes!==1)throw Error('记录同时被另一窗口建立，请重新进入');db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}return {state:s,created:true};
   },
   due(s,visit){if(visit===5)return Date.parse(s.visits[4]?.course_completed_at)+14*DAY;return Date.parse(s.baseline_at)+store.protocol.first_days*DAY+store.protocol.offsets[visit-1]*DAY;},
   apply(id,input){

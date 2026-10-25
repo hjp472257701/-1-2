@@ -41,6 +41,7 @@ export function createCohortServer({origin,dataDir,role,enabled=false,clock}={})
    if(!enabled)return send(503,{error:'本活动尚未开放，未保存答卷'});
    const token=(req.headers.cookie??'').split(';').map(x=>x.trim()).find(x=>x.startsWith(cookieName+'='))?.slice(cookieName.length+1),session=sessions.get(token);
    const valid=session&&session.expires>Date.now();
+   const deviceName=cookieName+'device',deviceToken=(req.headers.cookie??'').split(';').map(x=>x.trim()).find(x=>x.startsWith(deviceName+'='))?.slice(deviceName.length+1);
    if(req.method==='GET'){
     if(tail==='api/content')return send(200,C);
     if(tail==='api/state')return valid?send(200,store.view(store.load(session.pid))):send(401,{error:'请重新填写同一测试号码，已保存进度不会丢失'});
@@ -52,9 +53,10 @@ export function createCohortServer({origin,dataDir,role,enabled=false,clock}={})
    if(tail==='api/enter'){
     // Aggregate loopback proxy limit with a generous ceiling; high entropy allowlist is primary protection.
     const now=Date.now(),address=req.socket.remoteAddress,old=buckets.get(address),bucket=!old||old.until<now?{n:0,until:now+60000}:old;buckets.set(address,bucket);if(++bucket.n>120)return send(429,{error:'进入次数过多，请一分钟后再试'});
-    const x=store.enter(input);if(token)sessions.delete(token);for(const [t,s] of sessions)if(s.expires<now)sessions.delete(t);
+    const x=store.enter(input,{devicePid:valid?session.pid:store.deviceOwner(deviceToken)});if(token)sessions.delete(token);for(const [t,s] of sessions)if(s.expires<now)sessions.delete(t);
     const next=randomBytes(32).toString('base64url');sessions.set(next,{pid:x.state.id,expires:now+4*3600000});audit(x.created?'participant_created':'participant_resumed',request_id);
-    return send(200,{...store.view(x.state),created:x.created},undefined,{'Set-Cookie':`${cookieName}=${next}; Path=${base}; HttpOnly; Secure; SameSite=Strict; Max-Age=14400`});
+    const device=randomBytes(32).toString('base64url');store.grantDevice(x.state.id,device);
+    return send(200,{...store.view(x.state),created:x.created},undefined,{'Set-Cookie':[`${cookieName}=${next}; Path=${base}; HttpOnly; Secure; SameSite=Strict; Max-Age=14400`,`${deviceName}=${device}; Path=${base}; HttpOnly; Secure; SameSite=Strict; Max-Age=5184000`]});
    }
    if(!valid)return send(401,{error:'会话已过期，请填写同一号码恢复'});
    if(tail==='api/leave'){sessions.delete(token);return send(200,{ok:true},undefined,{'Set-Cookie':`${cookieName}=; Path=${base}; HttpOnly; Secure; SameSite=Strict; Max-Age=0`});}

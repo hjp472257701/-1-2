@@ -58,6 +58,32 @@ and NOT fixed alternation by student number. Persisted groups never change on
 refresh/restart. Completer/valid-sample counts may differ after dropout and are
 not force-balanced or silently excluded. Report this actual method in the thesis.
 Code pools (10 PILOT, 200 FORMAL) are capacity only, not sample-size calculations.
+
+Latest student-number correction (2026-10-25): students enter their OWN student
+number in the existing 测试号码 field, 4–24 digits/ASCII letters (leading zeros
+preserved; full-width normalized; letters case-folded). No issued code needed.
+The unused earlier code pools remain private for compatibility and are not sent.
+New student numbers can enroll from PRE only with explicit confirmation/consent.
+Only an environment-separated HMAC is persisted, never the raw student number in
+answer JSON, CSV or logs; identifiers are not independently verified enrollment.
+
+Do NOT treat a guessable student number as authorization to read past answers.
+Normal entry uses an HttpOnly/Secure/SameSite=Strict device cookie (60-day grant,
+hashed in the private store), plus the existing short session. Same device/browser
+can fill the number again after pause/short-session expiry/service restart without
+new signup or changing group. Unknown devices may NOT resume an existing student
+number. A teacher reports the request; researcher verifies identity and runs:
+
+    S3_ENVIRONMENT=PILOT S3_DATA_DIR=/var/lib/study3-pilot \
+      S3_RECOVERY_OUTPUT=/private/recovery-unique.txt node cohort-recovery.mjs
+
+Read the original student number from stdin, never a public URL/shell history.
+The private output is a single-use 15-minute link, sent only to that participant.
+They enter their original number there; existing state/group remains untouched.
+Used/expired links do not work; successful recovery revokes prior device grants.
+The fragment is removed after successful entry; it is not sent as an HTTP URL
+parameter. Links and browser storage are still subject to device/browser policies;
+clearing cookies/private browsing or changing devices requires teacher assistance.
 Credentials are not in code. New management may reuse the existing Study 3 secret
 by copying only its password verifier into each private data directory; sessions
 and cookies remain path-scoped and independent. Never reuse Study 1/2 tokens.
