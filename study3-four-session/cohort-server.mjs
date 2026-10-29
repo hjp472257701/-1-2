@@ -28,7 +28,7 @@ export function createCohortServer({origin,dataDir,role,enabled=false,clock}={})
    if(!req.url?.startsWith(base))return send(404,{error:'不是本环境入口'});
    const tail=req.url.slice(base.length);
    if(await researcher(req,res,tail))return;
-   if(req.method==='GET'&&tail==='health')return send(200,{ok:true,study:3,environment:role,collection_enabled:enabled,formal_ready:false,protocol:store.protocol.version});
+   if(req.method==='GET'&&tail==='health')return send(200,{ok:true,study:3,environment:role,collection_enabled:enabled,formal_ready:false,protocol:store.protocol.version,followup_policy:store.followupPolicy});
    const page=ENTRIES.find(e=>tail===e.id+'/');
    if(req.method==='GET'&&(page||!tail)){
     if(!enabled)return send(200,'<!doctype html><meta charset="utf-8"><title>研究三</title><h1>本活动尚未开放</h1><p>请等待组织者通知。没有收集或保存你的回答。</p>','text/html; charset=utf-8');

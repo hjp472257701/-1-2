@@ -8,6 +8,7 @@ import {annotatePresentation} from './response-presentation.mjs';
 import {entryById,currentEntry,assertEntryAction} from './entry.mjs';
 import {entryStatus} from './cohort-export.mjs';
 import {PARTICIPATION,PARTICIPATION_VERSION} from './cohort-client.mjs';
+import {followupPolicy,recordFollowupPolicy} from './followup-policy.mjs';
 export const DAY=86400000;
 export const PROTOCOLS={PILOT:{version:'S3-PILOT-COMPRESSED-7D-v1',first_days:1,offsets:[0,2,4,5],followup_days:14,description:'压缩预测试：前测后至少1天开始，四课在首课计划日第1/3/5/6天；末课14天后追踪，不等同正式剂量'},FORMAL:{version:'S3-FORMAL-SPACED-4-v1',first_days:2,offsets:[0,3,7,10],followup_days:14,description:'正式待开放：前测后至少2天首课，第1/4/8/11天四课，实际末课14天后追踪'}};
 export const CONSENT_VERSION=PARTICIPATION_VERSION;
@@ -19,6 +20,18 @@ export function openCohortStore({dataDir,role,enabled=false,clock=()=>Date.now()
  const metaPath=join(path,'environment.json'),meta={schema:1,role,protocol:PROTOCOLS[role],material_sha256:materialDigest(),measurement:C.measurement_version};
  if(existsSync(metaPath)){if(JSON.stringify(JSON.parse(readFileSync(metaPath,'utf8')))!==JSON.stringify(meta))throw Error('环境身份、协议或材料发生变化，拒绝混用旧库');}
  else{if(readdirSync(path).some(n=>/sqlite|identity-key/.test(n)))throw Error('目录存在未核验的旧数据，拒绝自动迁移');writeFileSync(metaPath,JSON.stringify(meta),{flag:'wx',mode:0o600});}
+ const followup=followupPolicy(role,PROTOCOLS[role]);
+ let amendment=null;
+ if(role==='PILOT'){
+  const amendmentPath=join(path,'followup-amendment-20261029.json');
+  if(existsSync(amendmentPath)){
+   amendment=JSON.parse(readFileSync(amendmentPath,'utf8'));
+   if(JSON.stringify(amendment.policy)!==JSON.stringify(followup)||!Number.isFinite(Date.parse(amendment.activated_at)))throw Error('预测试后测修订记录不一致，拒绝启动');
+  }else{
+   amendment={policy:followup,activated_at:new Date(clock()).toISOString(),original_protocol_version:meta.protocol.version};
+   writeFileSync(amendmentPath,JSON.stringify(amendment,null,2),{flag:'wx',mode:0o600});
+  }
+ }
  const keyPath=join(path,'cohort-key');if(!existsSync(keyPath))writeFileSync(keyPath,randomBytes(32),{flag:'wx',mode:0o600});const key=readFileSync(keyPath);if(key.length!==32)throw Error('invalid key');
  const dbPath=join(path,'study3.sqlite'),db=new DatabaseSync(dbPath);chmodSync(dbPath,0o600);db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS codes(lookup TEXT PRIMARY KEY, pid TEXT UNIQUE); CREATE TABLE IF NOT EXISTS participants(id TEXT PRIMARY KEY,revision INTEGER NOT NULL,state TEXT NOT NULL)');
  db.exec("CREATE TABLE IF NOT EXISTS allocations(seq INTEGER PRIMARY KEY AUTOINCREMENT,pid TEXT NOT NULL UNIQUE,arm TEXT NOT NULL CHECK(arm IN ('A','B')))");
@@ -30,7 +43,7 @@ export function openCohortStore({dataDir,role,enabled=false,clock=()=>Date.now()
  const load=id=>{const row=db.prepare('SELECT state FROM participants WHERE id=?').get(id);if(!row)throw Error('记录不存在');return JSON.parse(row.state);};
  const all=()=>db.prepare('SELECT state FROM participants ORDER BY id').all().map(r=>JSON.parse(r.state));
  const save=(before,next)=>{const r=db.prepare('UPDATE participants SET revision=?,state=? WHERE id=? AND revision=?').run(next.revision,JSON.stringify(next),next.id,before.revision);if(r.changes!==1)throw Error('另一窗口已经保存，请刷新；原答未被覆盖');return next;};
- const store={role,enabled,protocol:PROTOCOLS[role],db,load,all,close:()=>db.close(),
+ const store={role,enabled,protocol:PROTOCOLS[role],followupPolicy:followup,followupAmendment:amendment,db,load,all,close:()=>db.close(),
   issueCodes(count){if(!Number.isInteger(count)||count<1||count>500)throw Error('invalid count');if(role==='FORMAL'&&!enabled)throw Error('正式入口关闭，不能签发正式号码');const codes=[];db.exec('BEGIN IMMEDIATE');try{for(let i=0;i<count;i++){const n=role+'-'+randomBytes(12).toString('hex').toUpperCase();db.prepare('INSERT INTO codes VALUES(?,NULL)').run(hash(n));codes.push(n);}db.exec('COMMIT');return codes;}catch(e){db.exec('ROLLBACK');throw e;}},
   deviceOwner(token){const h=tokenHash(token);if(!h)return null;const r=db.prepare('SELECT pid FROM devices WHERE token_hash=? AND expires>?').get(h,clock());return r?.pid??null;},
   grantDevice(pid,token){if(!tokenHash(token))throw Error('设备凭证无效');load(pid);db.prepare('INSERT INTO devices VALUES(?,?,?)').run(tokenHash(token),pid,clock()+60*DAY);},
@@ -54,7 +67,8 @@ export function openCohortStore({dataDir,role,enabled=false,clock=()=>Date.now()
    const s=fresh();s.id=role+'-'+randomUUID();s.created_at=new Date(clock()).toISOString();s.data_role=role;s.not_research_data=false;s.environment=role;s.protocol=PROTOCOLS[role];s.material_sha256=meta.material_sha256;s.entry_started={pre:s.created_at};s.consent={version:CONSENT_VERSION,at:s.created_at,text:PARTICIPATION,text_sha256:createHash('sha256').update(PARTICIPATION).digest('hex')};
    db.exec('BEGIN IMMEDIATE');try{if(!row)db.prepare('INSERT INTO codes VALUES(?,NULL)').run(lookup);db.prepare('INSERT INTO participants VALUES(?,0,?)').run(s.id,JSON.stringify(s));const r=db.prepare('UPDATE codes SET pid=? WHERE lookup=? AND pid IS NULL').run(s.id,lookup);if(r.changes!==1)throw Error('记录同时被另一窗口建立，请重新进入');db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}return {state:s,created:true};
   },
-  due(s,visit){if(visit===5)return Date.parse(s.visits[4]?.course_completed_at)+14*DAY;return Date.parse(s.baseline_at)+store.protocol.first_days*DAY+store.protocol.offsets[visit-1]*DAY;},
+  policy(s){return recordFollowupPolicy(s,followup,store.protocol);},
+  due(s,visit){if(visit===5)return Date.parse(s.visits[4]?.course_completed_at)+store.policy(s).followup_days*DAY;return Date.parse(s.baseline_at)+store.protocol.first_days*DAY+store.protocol.offsets[visit-1]*DAY;},
   apply(id,input){
    if(!enabled)throw Error('本入口尚未开放');const s=load(id),a=input.action,e=entryById(input.entry_id);
    if(input.revision!==s.revision||input.content_version!==s.version)throw Error('页面状态或版本已改变，请刷新；原答未覆盖');
@@ -68,7 +82,7 @@ export function openCohortStore({dataDir,role,enabled=false,clock=()=>Date.now()
     if(n===5&&!s.visits[4]?.complete)throw Error('请先完成第四次训练和中测');
     const due=store.due(s,n);if(!Number.isFinite(due)||clock()<due)throw Error('尚未到本次日期，请于'+new Date(due).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})+'后进入');
     const next=structuredClone(s);next.visit=n;next.index=0;next.step=0;next.visits[n]={started_at:new Date(clock()).toISOString(),scheduled_at:new Date(due).toISOString(),complete:false};next.entry_started[e.id]=new Date(clock()).toISOString();
-    if(n===5){next.wave='T2';next.stage='general';next.visits[5].days_since_final_course=(clock()-Date.parse(s.visits[4].course_completed_at))/DAY;}else next.stage='course_orientation';
+    if(n===5){next.wave='T2';next.stage='general';next.visits[5].days_since_final_course=(clock()-Date.parse(s.visits[4].course_completed_at))/DAY;next.visits[5].followup_policy=store.policy(s);}else next.stage='course_orientation';
     next.events.push({type:'visit',visit:n,scheduled_at:new Date(due).toISOString(),at:new Date(clock()).toISOString()});next.revision++;return save(s,next);
    }
    if(!e)throw Error('缺少具体环节入口');assertEntryAction(s,e,a);
@@ -89,6 +103,6 @@ export function openCohortStore({dataDir,role,enabled=false,clock=()=>Date.now()
    if(next.stage==='interval'&&!next.entry_started.mid)next.entry_started.mid=new Date(clock()).toISOString();
    next.data_role=role;next.not_research_data=false;return save(s,next);
   },
-  view(s){return {state:s,scores:{...score(s),data_role:role,not_research_data:false},environment:role,collection_enabled:enabled,content_version:C.version};}
+  view(s){return {state:s,scores:{...score(s),data_role:role,not_research_data:false},environment:role,collection_enabled:enabled,content_version:C.version,followup_policy:store.policy(s),followup_amendment:amendment};}
  };return store;
 }

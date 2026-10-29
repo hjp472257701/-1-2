@@ -1,5 +1,28 @@
 # Study 3 independent longitudinal environments (2026-10-25)
 
+## Latest timing amendment (2026-10-29)
+
+User explicitly approved independent implementation/testing/deployment after C2C
+recovery timed out. PILOT post-test opens **24 hours after actual fourth-course
+completion**, still requiring the fourth course AND mid-test completed first.
+FORMAL remains 14 days. Courses, 3-minute neutral interval, items/scoring, URLs,
+allocation and existing answers are unchanged. The older 14-day PILOT paragraphs
+below describe the original enrollment protocol, superseded for unstarted PILOT
+post-tests by `S3-PILOT-FOLLOWUP-24H-20261029-v1`.
+
+Do not rewrite frozen environment.json or existing state.protocol. A separate
+private `followup-amendment-20261029.json` pins amendment/activation; exports add
+followup_policy/followup_amendment and overview timing columns. Starting T2 pins
+its actual timing policy in visits[5]; an already-started historical T2 keeps its
+original policy. Restart does not mutate original answers or dates. This short
+pilot follow-up checks collection/re-entry, not 14-day maintenance effectiveness.
+
+Deployment: update-pilot-followup.sh creates an immutable release and pins ONLY
+the PILOT service to that release via followup-24h.conf. It does not move shared
+current, restart FORMAL/technical, or touch Study 1/2. Future deployments must
+account for this explicit PILOT override; do not silently remove it. A pre-change
+SQLite backup stays private on the server. Never restore over incoming answers.
+
 Technical /study3/try/* and its data stay unchanged. New routes reuse the same
 approved CONTENT_V9, scoring and training actions, but use cohort-server.mjs,
 cohort-store.mjs and cohort-export.mjs. The historical sibling study3-pilot/
