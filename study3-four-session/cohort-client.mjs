@@ -16,6 +16,6 @@ export function cohortSource(name,source,base,role){
  source=source.replace("+button('仅演示：提前体验'+ENTRY.label,'data-start=\"demo\"')",'').replace("demo_override:b.dataset.start==='demo'",'').replace("demo_override:b.dataset.override==='true'",'');
  source=source.replace("${button('仅演示：跳过剩余时间（会标记）','id=\"interval-fast\"')}",'');
  source=source.replace('确认本次环节后开始；日期快进仅用于本地演示。','按本次安排开始；日期由服务器核对，不能提前跳过。').replace('只需填写原测试号码，进入并继续已保存的进度。','测试号码请填本人学号，每次保持相同。无需注册；换设备或清除浏览器数据后，请联系老师协助恢复。');
- if(role==='PILOT')source=source.replace('两周后仍邀请你用同一测试号码完成追踪。今天的体验不能说明干预有效。','第四次训练完成满24小时后，请按老师安排，用同一测试号码完成下一次问卷。').replaceAll('两周追踪','后续问卷').replace('后测 · 结束两周后','问卷填写').replace('追踪按实际末课结束后14天','后续问卷按实际末课结束满24小时');
+ if(role==='PILOT')source=source.replace('两周后仍邀请你用同一测试号码完成追踪。今天的体验不能说明干预有效。','下一次问卷统一在11月2日20:00开放，请按老师安排，用同一测试号码参加。').replaceAll('两周追踪','后续问卷').replace('后测 · 结束两周后','问卷填写').replace('追踪按实际末课结束后14天','后续问卷统一在11月2日20:00开放');
  return source;
 }

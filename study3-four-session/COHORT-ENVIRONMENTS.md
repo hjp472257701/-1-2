@@ -1,5 +1,24 @@
 # Study 3 independent longitudinal environments (2026-10-25)
 
+## Latest: one ten-person pilot calendar (2026-10-29, supersedes 24-hour wait)
+
+User explicitly confirmed one schedule for all ten people, including the person
+whose baseline was a day later. PILOT practice-3 opens 2026-10-31 18:30 Beijing;
+practice-4 opens 2026-11-01 18:30; post opens 2026-11-02 20:00. Mid still follows
+actual fourth-course completion and its three-minute neutral task. Previous
+courses/mid must be completed; no fabricated completions. Post no longer waits
+each person's fourth-course time plus 24h; actual intervals are exported as-is.
+22:00 that evening is the organizer's recommended submission deadline, not an
+automatic closure. Late submissions remain possible. This fixed calendar applies
+to this PILOT environment, not FORMAL or an automatically inferred next cohort.
+
+`calendar-amendment-20261029.json` separately pins this policy and retains the
+previous 24-hour receipt. `calendar_amendment` is exported; current followup_policy
+has basis=fixed_group_calendar, followup_days=null (not a missing response).
+Started historical T2 keeps its pinned policy. State/answers/dates stay unchanged.
+Deploy using update-pilot-calendar.sh, which updates only the PILOT-specific
+override (historical filename followup-24h.conf) to the new release.
+
 ## Latest timing amendment (2026-10-29)
 
 User explicitly approved independent implementation/testing/deployment after C2C
